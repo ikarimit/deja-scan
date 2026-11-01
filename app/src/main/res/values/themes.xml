@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.DejaScan" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/deja_bg</item>
+    </style>
+
+    <style name="Theme.DejaScan.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/deja_bg</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash</item>
+        <item name="postSplashScreenTheme">@style/Theme.DejaScan</item>
+    </style>
+</resources>

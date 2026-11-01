@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Earth with a sonar sweep on top and a green border ring around the edge. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <group android:pivotX="54" android:pivotY="54" android:scaleX="0.88" android:scaleY="0.88">
+    <!-- ocean -->
+    <path android:fillColor="#0B3552" android:pathData="M54,54 m-31,0 a31,31 0 1,0 62,0 a31,31 0 1,0 -62,0"/>
+    <group>
+        <clip-path android:pathData="M54,54 m-31,0 a31,31 0 1,0 62,0 a31,31 0 1,0 -62,0"/>
+        <!-- grid -->
+        <path android:strokeColor="#4D7FB3CF" android:strokeWidth="0.7" android:fillColor="#00000000" android:pathData="M54,23 a15,31 0 1,0 0,62 a15,31 0 1,0 0,-62"/>
+        <path android:strokeColor="#4D7FB3CF" android:strokeWidth="0.7" android:fillColor="#00000000" android:pathData="M54,23 a5,31 0 1,0 0,62 a5,31 0 1,0 0,-62"/>
+        <path android:strokeColor="#4D7FB3CF" android:strokeWidth="0.7" android:fillColor="#00000000" android:pathData="M23,40 Q54,46 85,40 M23,54 L85,54 M23,68 Q54,62 85,68"/>
+        <!-- continents: Americas (left edge), Europe, Africa, Asia -->
+        <path android:fillColor="#2E9E5B" android:pathData="M26,44 C30,42 34,46 34,52 C34,58 30,64 28,70 C26,66 24,56 26,44 Z"/>
+        <path android:fillColor="#2E9E5B" android:pathData="M32,66 C36,66 38,72 36,78 C34,80 31,76 31,70 Z"/>
+        <path android:fillColor="#2E9E5B" android:pathData="M46,38 C48,34 54,33 58,36 C60,38 58,42 54,44 C50,45 46,44 45,41 Z"/>
+        <path android:fillColor="#2E9E5B" android:pathData="M50,52 C46,50 42,52 40,56 C38,62 42,70 48,78 C52,82 58,80 60,72 C62,66 66,62 64,56 C62,52 56,50 50,52 Z"/>
+        <path android:fillColor="#2E9E5B" android:pathData="M62,36 C68,34 76,38 80,46 C82,52 78,56 72,54 C68,52 66,46 62,44 Z"/>
+        <path android:fillColor="#2E9E5B" android:pathData="M68,56 C72,58 72,64 70,66 C68,64 66,60 68,56 Z"/>
+        <!-- sonar sweep -->
+        <path android:fillColor="#552BFF88" android:pathData="M54,54 L74.5,33.5 A29,29 0 0,1 82.9,51.5 Z"/>
+    </group>
+    <!-- sonar rings and sweep line -->
+    <path android:strokeColor="#2BFF88" android:strokeWidth="1.8" android:fillColor="#00000000" android:pathData="M54,54 m-26,0 a26,26 0 1,0 52,0 a26,26 0 1,0 -52,0"/>
+    <path android:strokeColor="#2BFF88" android:strokeWidth="1.8" android:fillColor="#00000000" android:pathData="M54,54 m-17,0 a17,17 0 1,0 34,0 a17,17 0 1,0 -34,0"/>
+    <path android:strokeColor="#2BFF88" android:strokeWidth="1.8" android:fillColor="#00000000" android:pathData="M54,54 m-8,0 a8,8 0 1,0 16,0 a8,8 0 1,0 -16,0"/>
+    <path android:strokeColor="#2BFF88" android:strokeWidth="2.4" android:strokeLineCap="round" android:pathData="M54,54 L74.5,33.5"/>
+    <path android:fillColor="#FFB000" android:pathData="M64,62 m-3,0 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0"/>
+    <path android:fillColor="#FFB000" android:pathData="M43,46 m-2.6,0 a2.6,2.6 0 1,0 5.2,0 a2.6,2.6 0 1,0 -5.2,0"/>
+    <path android:fillColor="#FFB000" android:pathData="M45,66 m-2.2,0 a2.2,2.2 0 1,0 4.4,0 a2.2,2.2 0 1,0 -4.4,0"/>
+    </group>
+    <!-- rounded-square border around the icon -->
+    <path android:strokeColor="#2BFF88" android:strokeWidth="1.2" android:fillColor="#00000000" android:pathData="M37,25 H71 A12,12 0 0 1 83,37 V71 A12,12 0 0 1 71,83 H37 A12,12 0 0 1 25,71 V37 A12,12 0 0 1 37,25 Z"/>
+</vector>
