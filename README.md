@@ -8,15 +8,22 @@ Not affiliated with WiGLE, IEEE, the Bluetooth SIG or OpenStreetMap.
 
 ## Features
 
-- Import of a WiGLE `.sqlite` backup (linked file, refreshed when it changes), including WiGLE's observations.
-- Live scanning in a foreground service: Wi-Fi, BLE and Bluetooth Classic discovery. Alerts only when a device
-  appears for the first time or gets clearly closer.
-- Live views: radar, signal bars, signal history, Wi-Fi channel spectrum; hot/cold tracker with haptics and beeps.
-- Manufacturer names from the MAC prefix (IEEE registries) and Bluetooth company IDs.
-- Offline map (Mapsforge `.map` files, several can be combined): one dot per device, numbered clusters when
-  zoomed out, position estimate from your own movement, a chosen device's places with first/last seen, dotted
-  lines for devices seen in several places, and a day search on the Devices tab.
-- Everything stays on the phone. The app declares no internet permission.
+## Features
+
+- **WiGLE SQLite Import & Two-Way Merge:** Import WiGLE `.sqlite` backups with observation histories. Merge newly discovered live networks and GPS location sightings directly back into the linked WiGLE database from the Devices tab.
+- **Live Scanning & Real-Time Metrics:** Foreground scanning service for Wi-Fi, BLE, and Bluetooth Classic with real-time counter bar (Total Networks, New Discovered networks, rolling AP Density per minute, and session Peak Density).
+- **Wi-Fi Security Suite Analysis & Passive Advisories:** Automatic classification of Wi-Fi security suites (WEP, Open, OWE, WPA, WPA2, WPA3, WPS, TKIP). Passive / silent system notifications and in-app advisory banners for vulnerable or unencrypted networks (e.g., WEP alerts with cryptographic risk explanations and remediation suggestions).
+- **Six Live Views:**
+  1. *Radar:* 360° signal-level radar with pulsing warning rings on insecure/WEP APs and tap-to-inspect.
+  2. *Signal Bars:* Ranked signal strength meters with security and type badges.
+  3. *Signal History:* Real-time signal fluctuation graphs over time.
+  4. *Spectrum Scanner:* Wi-Fi channel bandwidth & spectrum scanner (2.4 GHz, 5 GHz, 6 GHz with Wi-Fi 6 / 6E / 7 standards, 20/40/80/160/320 MHz bandwidth curves, and hardware capability detection).
+  5. *AP Density:* Rolling per-minute AP discovery and density timeline graph.
+  6. *Vendors:* Live breakdown and search of active devices grouped by manufacturer (IEEE registries and Bluetooth company IDs) with monogram chips and randomized MAC flags.
+- **Root Status Detection:** Automatic non-intrusive environment check detecting superuser/root privileges (su binaries, Magisk, KernelSU, APatch, test-keys) with a header status indicator.
+- **Hot/Cold Proximity Tracker:** Proximity tracking with configurable audible beeps and haptic vibration feedback.
+- **Offline Map:** Mapsforge vector map rendering with clustering, movement-based position estimation, multi-location device tracking (solo view, links), and day search.
+- **Privacy First:** 100% offline, no cloud connectivity, zero internet permission (`android.permission.INTERNET` is not declared).
 
 ## Build
 

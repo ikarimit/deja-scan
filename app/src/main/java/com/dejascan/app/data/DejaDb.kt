@@ -348,6 +348,21 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
         return readableDatabase.rawQuery(sql, macs.toTypedArray()).use { toList(it) }
     }
 
+    /** Returns the subset of [macs] that exist in the local device table. */
+    fun filterKnown(macs: Collection<String>): Set<String> {
+        if (macs.isEmpty()) return emptySet()
+        val out = HashSet<String>()
+        for (chunk in macs.chunked(400)) {
+            readableDatabase.rawQuery(
+                "SELECT mac FROM device WHERE mac IN (${chunk.joinToString(",") { "?" }})",
+                chunk.toTypedArray(),
+            ).use { c ->
+                while (c.moveToNext()) out.add(c.getString(0))
+            }
+        }
+        return out
+    }
+
     /**
      * Live match: is this heard address one the active watch mode cares about?
      * [kinds] are the WiGLE type codes the radio can produce (Bluetooth sightings: B and E).
@@ -490,6 +505,24 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
     fun clearSights() {
         writableDatabase.execSQL("DELETE FROM sight")
     }
+
+    fun allSights(): List<WigleMerger.SightRecord> =
+        readableDatabase.rawQuery("SELECT mac,time,lat,lon,acc,rssi FROM sight", null).use { c ->
+            val out = ArrayList<WigleMerger.SightRecord>()
+            while (c.moveToNext()) {
+                out.add(
+                    WigleMerger.SightRecord(
+                        mac = c.getString(0),
+                        time = c.getLong(1),
+                        lat = c.getDouble(2),
+                        lon = c.getDouble(3),
+                        acc = c.getFloat(4),
+                        rssi = c.getInt(5),
+                    )
+                )
+            }
+            out
+        }
 
     fun counts(macs: Collection<String>): Map<String, PointCounts> {
         val out = HashMap<String, PointCounts>()

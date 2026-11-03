@@ -37,9 +37,16 @@ import com.dejascan.app.geo.Geo
 import com.dejascan.app.geo.Method
 import com.dejascan.app.scan.MacUtil
 import com.dejascan.app.scan.PhoneFix
+import com.dejascan.app.scan.NetworkMode
+import com.dejascan.app.scan.SecurityIssueSeverity
+import com.dejascan.app.scan.SecurityLevel
+import com.dejascan.app.scan.SecuritySuite
 import com.dejascan.app.scan.Sighting
 import com.dejascan.app.scan.SightingBus
+import com.dejascan.app.scan.WifiSecurity
+import com.dejascan.app.scan.channelFor
 import com.dejascan.app.scan.trendOf
+import androidx.compose.foundation.layout.Spacer
 import kotlinx.coroutines.delay
 import org.mapsforge.core.model.LatLong
 import java.text.DateFormat
@@ -202,9 +209,108 @@ private fun InfoTabBody(s: Sighting, live: Boolean, now: Long, vendor: String?, 
         Line("BEST", "${s.best} dBm")
         Line("HEARD", "${s.count}x since ${clock.format(Date(s.firstSeen))}")
         Line("LAST", "${ageSec}s ago")
+        if (s.type == "W") {
+            Section("WI-FI SPECTRUM & SECURITY")
+            val std = s.standardLabel.ifEmpty {
+                s.adv.firstOrNull { it.startsWith("Standard: ") }?.removePrefix("Standard: ") ?: ""
+            }
+            if (std.isNotEmpty()) {
+                val stdColor = when {
+                    std.contains("Wi-Fi 7") || std.contains("Wi-Fi 6") -> Phosphor.cyan
+                    std.contains("Wi-Fi 5") -> Phosphor.green
+                    else -> Phosphor.text
+                }
+                Line("STANDARD", std, stdColor)
+            }
+            if (s.freq > 0) {
+                Line("BAND / CH", "${s.wifiBand.label} • Ch ${channelFor(s.freq)} (${s.freq} MHz)")
+                val bwLabel = s.bandwidthLabel
+                val span = s.frequencySpan
+                val cfText = if (s.centerFreq0 > 0 && s.centerFreq0 != s.freq) ", Center: ${s.centerFreq0} MHz" else ""
+                Line("BANDWIDTH", "$bwLabel (${span.first}–${span.last} MHz$cfText)")
+            }
+            val parsed = WifiSecurity.fromAdv(s.adv) ?: (if (s.securitySuite != SecuritySuite.UNKNOWN) WifiSecurity.fromSuite(s.securitySuite) else null)
+            if (parsed != null) {
+                val color = when (parsed.suite.level) {
+                    SecurityLevel.HIGH, SecurityLevel.ENHANCED_OPEN -> Phosphor.cyan
+                    SecurityLevel.MODERN -> Phosphor.green
+                    SecurityLevel.LEGACY -> Phosphor.amber
+                    SecurityLevel.INSECURE, SecurityLevel.OPEN -> Phosphor.red
+                    SecurityLevel.ENTERPRISE -> Phosphor.text
+                }
+                Line("SECURITY", parsed.suite.label, color)
+                if (parsed.keyManagement.isNotEmpty() && parsed.keyManagement != "None") {
+                    Line("AUTH / AKM", parsed.keyManagement)
+                }
+                if (parsed.ciphers.isNotEmpty()) {
+                    Line("CIPHERS", parsed.ciphers.joinToString(", "))
+                }
+                Line("MODE", parsed.mode.label)
+                Line("ROAMING", if (parsed.mode == NetworkMode.INFRASTRUCTURE) "Multi-AP / Distribution (ESS)" else "Single BSS / Ad-Hoc", Phosphor.sub)
+                if (parsed.hasWps) {
+                    Line("WPS", "Supported" + if (parsed.wpsDetails != null) " (${parsed.wpsDetails})" else "", Phosphor.amber)
+                }
+                if (parsed.isFastTransition) {
+                    Line("802.11r FT", "Fast BSS Transition", Phosphor.cyan)
+                }
+                if (parsed.raw.isNotEmpty()) {
+                    Line("RAW CAPS", parsed.raw, Phosphor.dim)
+                }
+                if (parsed.securityIssues.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    for (issue in parsed.securityIssues) {
+                        val alertColor = when (issue.severity) {
+                            SecurityIssueSeverity.CRITICAL -> Phosphor.red
+                            SecurityIssueSeverity.HIGH, SecurityIssueSeverity.MEDIUM -> Phosphor.amber
+                            SecurityIssueSeverity.LOW -> Phosphor.cyan
+                        }
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .background(alertColor.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
+                                .border(1.dp, alertColor.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+                                .padding(8.dp),
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    MText(
+                                        when (issue.severity) {
+                                            SecurityIssueSeverity.CRITICAL -> "⚠️ CRITICAL SECURITY RISK"
+                                            SecurityIssueSeverity.HIGH -> "⚠️ HIGH SECURITY RISK"
+                                            SecurityIssueSeverity.MEDIUM -> "⚠️ SECURITY WARNING"
+                                            SecurityIssueSeverity.LOW -> "ℹ️ SECURITY NOTICE"
+                                        },
+                                        color = alertColor,
+                                        size = 9.sp,
+                                        weight = FontWeight.Bold,
+                                    )
+                                }
+                                MText(issue.title, color = Phosphor.text, size = 11.sp, weight = FontWeight.Bold)
+                                MText(issue.detail, color = Phosphor.text.copy(alpha = 0.85f), size = 9.5.sp)
+                                MText("Action: ${issue.recommendation}", color = alertColor, size = 9.sp, weight = FontWeight.Medium)
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                    }
+                }
+            } else {
+                Line("SECURITY", "Unknown / not captured yet", Phosphor.sub)
+            }
+        }
         Section("ADVERTISED")
-        if (s.adv.isEmpty()) Line("", "(nothing captured yet)", Phosphor.sub)
-        else s.adv.forEach { Line("", it) }
+        val displayAdv = if (s.type == "W") {
+            s.adv.filter {
+                !it.startsWith("Security:") && !it.startsWith("Mode:") && !it.startsWith("Raw Caps:") &&
+                !it.startsWith("Auth:") && !it.startsWith("Ciphers:") && !it.startsWith("WPS:") &&
+                !it.startsWith("802.11r") && !it.startsWith("Passpoint:") && !it.startsWith("Channel:") &&
+                !it.startsWith("Standard:") && !it.startsWith("Bandwidth:")
+            }
+        } else s.adv
+        if (displayAdv.isEmpty()) Line("", "(nothing captured yet)", Phosphor.sub)
+        else displayAdv.forEach { Line("", it) }
     }
 }
 

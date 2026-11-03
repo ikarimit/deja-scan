@@ -120,6 +120,7 @@ class ScanService : Service() {
         prefs = Prefs(this)
         wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         btAdapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+        SightingBus.wifiCapabilities.value = WifiCapabilities.detect(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -191,25 +192,81 @@ class ScanService : Service() {
         val results = try { wifi?.scanResults } catch (_: SecurityException) { null } ?: return
         for (r in results) {
             @Suppress("DEPRECATION") val ssid = r.SSID ?: ""
-            val adv = listOf(
-                "SSID: ${ssid.ifEmpty { "(hidden)" }}",
-                "Channel: ${channelFor(r.frequency)} (${r.frequency} MHz)",
-                "Security: ${r.capabilities}",
+            val sec = WifiSecurity.parse(r.capabilities)
+            val channelWidth = r.channelWidth
+            val centerFreq0 = r.centerFreq0
+            val centerFreq1 = r.centerFreq1
+            val rawStandard = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) r.wifiStandard else 0
+            val wifiStandard = WifiStandardHelper.resolveStandard(rawStandard, r.frequency, channelWidth, r.capabilities)
+            val stdLabel = WifiStandardHelper.getStandardName(wifiStandard, r.frequency)
+            val widthLabel = ChannelWidthHelper.getWidthLabel(channelWidth)
+            val band = WifiBand.forFrequency(r.frequency)
+            val span = ChannelWidthHelper.getFrequencySpan(r.frequency, channelWidth, centerFreq0)
+
+            val adv = buildList {
+                add("SSID: ${ssid.ifEmpty { "(hidden)" }}")
+                add("Channel: ${channelFor(r.frequency)} (${r.frequency} MHz) [${band.label}]")
+                if (stdLabel.isNotEmpty() && stdLabel != "Unknown standard") {
+                    add("Standard: $stdLabel")
+                }
+                add("Bandwidth: $widthLabel (${span.first}–${span.last} MHz" +
+                    (if (centerFreq0 > 0 && centerFreq0 != r.frequency) ", Center: $centerFreq0 MHz" else "") + ")")
+                add("Security: ${sec.suite.label}")
+                if (sec.keyManagement.isNotEmpty() && sec.keyManagement != "None") {
+                    add("Auth: ${sec.keyManagement}")
+                }
+                if (sec.ciphers.isNotEmpty()) {
+                    add("Ciphers: ${sec.ciphers.joinToString(", ")}")
+                }
+                add("Mode: ${sec.mode.label} (${sec.mode.description})")
+                if (sec.hasWps) {
+                    add("WPS: Supported" + if (sec.wpsDetails != null) " (${sec.wpsDetails})" else "")
+                }
+                if (sec.isFastTransition) add("802.11r FT: Fast BSS Transition supported")
+                if (sec.isPasspoint) add("Passpoint: Hotspot 2.0 supported")
+                if (sec.raw.isNotEmpty()) add("Raw Caps: ${sec.raw}")
+            }
+            onHeard(
+                r.BSSID, WIFI_KINDS, r.level, ssid, r.frequency, adv, sec.suite,
+                channelWidth = channelWidth,
+                centerFreq0 = centerFreq0,
+                centerFreq1 = centerFreq1,
+                wifiStandard = wifiStandard,
+                standardLabel = stdLabel,
             )
-            onHeard(r.BSSID, WIFI_KINDS, r.level, ssid, r.frequency, adv)
         }
+        updateSecurityNotifications()
     }
 
-    private fun onHeard(rawMac: String?, kinds: Set<String>, rssi: Int, liveName: String, freq: Int, adv: List<String>) {
+    private fun onHeard(
+        rawMac: String?,
+        kinds: Set<String>,
+        rssi: Int,
+        liveName: String,
+        freq: Int,
+        adv: List<String>,
+        securitySuite: SecuritySuite = SecuritySuite.UNKNOWN,
+        channelWidth: Int = 0,
+        centerFreq0: Int = 0,
+        centerFreq1: Int = 0,
+        wifiStandard: Int = 0,
+        standardLabel: String = "",
+    ) {
         val mac = MacUtil.normalize(rawMac) ?: return
         val matched = db.match(mac, kinds, prefs.filter())
+        val inDbDev = matched ?: db.devices(listOf(mac)).firstOrNull()
+        val inDb = inDbDev != null
         // other devices are still reported (for the map) but never alert and are kept out of the radar
-        val dev = matched ?: db.devices(listOf(mac)).firstOrNull() ?: Device(
+        val dev = inDbDev ?: Device(
             mac = mac, name = "", type = kinds.first(), lastTime = 0L, lat = 0.0, lon = 0.0,
             randomised = MacUtil.isRandomised(mac), watched = false,
         )
         val now = System.currentTimeMillis()
-        SightingBus.report(dev, liveName, rssi, freq, adv, now, matched != null)
+        SightingBus.report(
+            dev, liveName, rssi, freq, adv, now, matched != null, inDatabase = inDb, securitySuite = securitySuite,
+            channelWidth = channelWidth, centerFreq0 = centerFreq0, centerFreq1 = centerFreq1,
+            wifiStandard = wifiStandard, standardLabel = standardLabel,
+        )
         val fix = SightingBus.phone.value
         val every = if (matched != null) 5_000L else 30_000L
         if (fix != null && now - fix.time < 15_000 && fix.acc <= 50f && now - (lastSave[mac] ?: 0L) >= every) {
@@ -266,24 +323,118 @@ class ScanService : Service() {
         nm.createNotificationChannel(
             NotificationChannel(CH_HITS, "Device nearby", NotificationManager.IMPORTANCE_HIGH)
         )
+        nm.createNotificationChannel(
+            NotificationChannel(CH_SECURITY, "Security advisories", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Silent alerts when an AP in range has WEP or security issues"
+                enableVibration(false)
+                enableLights(false)
+            }
+        )
     }
 
-    private fun openApp() = PendingIntent.getActivity(
-        this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
-    )
+    private fun openApp(selectMac: String? = null): PendingIntent {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            if (selectMac != null) putExtra(MainActivity.EXTRA_SELECT_MAC, selectMac)
+        }
+        val requestCode = if (selectMac != null) selectMac.hashCode() else 0
+        return PendingIntent.getActivity(
+            this, requestCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
 
-    private fun ongoingNotification(): Notification {
+    private fun ongoingNotification(insecureAps: List<Sighting> = emptyList()): Notification {
         val stop = PendingIntent.getService(
             this, 1, Intent(this, ScanService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE
         )
-        return Notification.Builder(this, CH_ONGOING)
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+        val wepAps = insecureAps.filter { it.isWep }
+        val openAps = insecureAps.filter { it.isOpen }
+        val otherInsecure = insecureAps.filter { !it.isWep && !it.isOpen }
+
+        val builder = Notification.Builder(this, CH_ONGOING)
+            .setSmallIcon(if (wepAps.isNotEmpty()) android.R.drawable.stat_notify_error else android.R.drawable.stat_sys_data_bluetooth)
             .setContentTitle("Deja Scan is watching")
-            .setContentText("Listening for saved devices")
-            .setContentIntent(openApp())
+            .setContentIntent(openApp(insecureAps.firstOrNull()?.mac))
             .addAction(Notification.Action.Builder(null, "Stop", stop).build())
             .setOngoing(true)
-            .build()
+
+        if (insecureAps.isNotEmpty()) {
+            val alertSummary = buildList {
+                if (wepAps.isNotEmpty()) add("${wepAps.size} WEP")
+                if (openAps.isNotEmpty()) add("${openAps.size} Open")
+                if (otherInsecure.isNotEmpty()) add("${otherInsecure.size} Insecure")
+            }.joinToString(", ")
+            builder.setContentText("⚠️ Insecure Wi-Fi: $alertSummary • Watching")
+
+            builder.style = Notification.BigTextStyle()
+                .setBigContentTitle("Deja Scan is watching")
+                .setSummaryText(if (wepAps.isNotEmpty()) "⚠️ WEP Detected" else "Security Advisory")
+                .bigText(
+                    "Listening for saved devices\n" +
+                    "⚠️ Insecure Wi-Fi in range:\n" +
+                    insecureAps.take(4).joinToString("\n") { s ->
+                        "• ${s.name} [${s.securitySuite.shortLabel}]: ${s.primarySecurityIssue?.summary ?: "Insecure"} (${s.rssi} dBm)"
+                    } + if (insecureAps.size > 4) "\n+ ${insecureAps.size - 4} more" else ""
+                )
+            return builder.build()
+        } else {
+            builder.setContentText("Listening for saved devices")
+            return builder.build()
+        }
+    }
+
+    private fun updateSecurityNotifications() {
+        val now = System.currentTimeMillis()
+        val all = SightingBus.sightings.value.values
+        val activeInsecure = all.filter {
+            it.type == "W" && (now - it.time <= STALE_MS) && it.hasSecurityIssue
+        }.sortedWith(compareBy({ it.primarySecurityIssue?.severity?.ordinal ?: 99 }, { -it.rssi }))
+
+        val nm = getSystemService(NotificationManager::class.java) ?: return
+
+        // 1. Passively update the ongoing foreground service notification
+        nm.notify(ONGOING_ID, ongoingNotification(activeInsecure))
+
+        // 2. Manage the passive silent security advisory notification
+        if (activeInsecure.isNotEmpty()) {
+            val wepAps = activeInsecure.filter { it.isWep }
+            val top = activeInsecure.first()
+            val issue = top.primarySecurityIssue
+
+            val title = if (wepAps.isNotEmpty()) {
+                "⚠️ WEP Wi-Fi Detected (${wepAps.size} in range)"
+            } else {
+                "⚠️ Insecure Wi-Fi Detected: ${top.name}"
+            }
+
+            val text = if (wepAps.isNotEmpty()) {
+                val first = wepAps.first()
+                "AP '${first.name}' (${first.mac}, ${first.rssi} dBm) uses broken WEP encryption."
+            } else {
+                "AP '${top.name}' has security risk: ${issue?.summary ?: "Insecure"}"
+            }
+
+            val builder = Notification.Builder(this, CH_SECURITY)
+                .setSmallIcon(android.R.drawable.stat_notify_error)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setContentIntent(openApp(top.mac))
+                .setAutoCancel(true)
+
+            builder.style = Notification.BigTextStyle()
+                .setBigContentTitle(title)
+                .setSummaryText(if (wepAps.isNotEmpty()) "Critical Security Risk" else "Security Advisory")
+                .bigText(
+                    text + "\n" +
+                    activeInsecure.take(5).joinToString("\n") { s ->
+                        "• ${s.name} [${s.securitySuite.shortLabel}]: ${s.primarySecurityIssue?.summary ?: "Insecure"} (${s.rssi} dBm)"
+                    } + if (activeInsecure.size > 5) "\n+ ${activeInsecure.size - 5} more" else ""
+                )
+
+            nm.notify(SECURITY_ID, builder.build())
+        } else {
+            nm.cancel(SECURITY_ID)
+        }
     }
 
     private fun hitNotification(name: String, mac: String, rssi: Int): Notification =
@@ -301,6 +452,7 @@ class ScanService : Service() {
         if (bleActive) runCatching { btAdapter?.bluetoothLeScanner?.stopScan(bleCallback) }
         runCatching { if (btAdapter?.isDiscovering == true) btAdapter?.cancelDiscovery() }
         runCatching { locMgr?.removeUpdates(locListener) }
+        runCatching { getSystemService(NotificationManager::class.java)?.cancel(SECURITY_ID) }
         SightingBus.phone.value = null
         io.execute { db.close() }
         io.shutdown()
@@ -314,7 +466,10 @@ class ScanService : Service() {
         const val ACTION_STOP = "com.dejascan.app.STOP"
         private const val CH_ONGOING = "ongoing"
         private const val CH_HITS = "hits"
+        private const val CH_SECURITY = "security"
         private const val ONGOING_ID = 1
+        private const val SECURITY_ID = 2
+        private const val STALE_MS = 5 * 60_000L
         private const val WIFI_INTERVAL_MS = 35_000L
         private const val CLASSIC_PAUSE_MS = 30_000L
         private val WIFI_KINDS = setOf("W")

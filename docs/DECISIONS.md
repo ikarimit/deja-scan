@@ -144,3 +144,55 @@
 - **Status:** accepted
 - **User chose:** private repository `deja-scan` under the user's GitHub account; MIT licence; manufacturer-name tables left out and rebuilt by a script (terms unconfirmed); commits use the GitHub noreply identity instead of the personal email in the git settings; re-download of the four public files approved to test the script.
 - **PII scrub:** local.properties (home path) and all build/db/map files excluded; searched the tree for the home path, email, phone serial, SD-card id, WiGLE backup file names, MAC addresses (only synthetic test values remain), IP addresses and place names; one country-specific map file mention generalised.
+
+## [D-027] 2026-11-02 — Wi-Fi 6 / 6E / 7 (6 GHz) & Channel Bandwidth Spectrum Scanning
+- **Status:** accepted
+- **Context:** User requested Wi-Fi 6, 6E, 7 (6 GHz) and Channel Bandwidth Spectrum scanning if supported by the device and not yet implemented.
+- **Implementation:**
+  - Device capability detection via `WifiManager.is5GHzBandSupported()`, `is6GHzBandSupported()`, and `isWifiStandardSupported()` for 802.11ax and 802.11be.
+  - ScanResult enrichment with channel width (20/40/80/160/320 MHz), center frequencies (`centerFreq0`, `centerFreq1`), and Wi-Fi standard.
+  - Spectrum live view upgraded with band selection (2.4 GHz, 5 GHz, 6 GHz), 6 GHz sub-band controls (U-NII-5 through 8), device support status chips, filter toggle (ALL/WATCHED), view toggle (CURVES/BARS), OFDM bandwidth curves with flat top and skirts, channel tick grid, and interactive AP row list.
+  - Graceful fallback when 6 GHz hardware is unsupported, with a clear hardware capability diagnosis.
+- **Applies to:** project
+
+## [D-028] 2026-11-03 — Passive Wi-Fi Security & WEP Notifications
+- **Status:** accepted
+- **Context:** User requested a passive way to notify when an AP has WEP or some sort of security issue.
+- **Design Choices:**
+  - Non-intrusive / passive delivery: zero alarms, zero audio chirps, zero buzzing.
+  - System level: Silent `NotificationChannel` (`IMPORTANCE_LOW`, silent, no vibration) for security advisories plus live updates to the ongoing foreground notification with WEP / Insecure count summaries. Auto-cancels when APs drop off after 5 minutes. Notification intent passes `EXTRA_SELECT_MAC` to focus the AP in `MainActivity`.
+  - In-App UI: `SecurityAdvisoryBanner` above Live views alerting to WEP/insecure APs with 1-tap "INSPECT", expandable list for multiple APs, and dismiss option; `RadarPanel` pulsing warning halos around WEP blips; `SpectrumPanel` and `BarsPanel` security badges (`[WEP ⚠️]`, `[OPEN ⚠️]`); `InfoPanel` comprehensive Security Advisory card explaining the cryptographic vulnerability and remediation.
+  - Issue model: `SecurityIssue` with severity (`CRITICAL` for broken WEP, `HIGH` for cleartext Open and WPS-PIN, `MEDIUM` for WPS-PBC and TKIP, `LOW` for Ad-hoc).
+- **Applies to:** project
+
+## [D-029] 2026-11-03 — Root Status Detection
+- **Status:** accepted
+- **Context:** User requested checking root / superuser status without breaking app stability or security.
+- **Design Choices:**
+  - Multi-vector detection checking:
+    1. OS Build tags for unofficial `test-keys`.
+    2. Existence of `su` binaries across 16 canonical system paths and modern root solutions (Magisk `/data/adb/magisk`, KernelSU `/data/adb/ksu`, APatch `/data/adb/ap`).
+    3. `PATH` environment directory inspection.
+    4. Execution test via `which su`.
+  - UI Header indicator: discreet `ROOT` (green) / `NON-ROOT` (muted) pill with instant tap-to-toast feedback explaining access state.
+- **Applies to:** project
+
+## [D-030] 2026-11-03 — WiGLE SQLite Database Merger
+- **Status:** accepted
+- **Context:** User requested merging newly discovered live findings back into the WiGLE SQLite backup file.
+- **Design Choices:**
+  - Two-way sync: Reads existing `network` and `location` tables from the linked WiGLE `.sqlite` file (via SAF persistent URI), prepares `NetworkRecord` and `SightRecord` instances from live `Sighting` objects, inserts or updates records with latest/best RSSI and coordinates, and safely writes the combined DB back.
+  - Local database update: Updates internal `device` and `obs` tables, rebuilds spatial map cell indexes, and updates `SightingBus` known-device cache so newly merged networks are recognized as known.
+  - Triggered via "Merge findings into WiGLE file" button on the Devices tab with status progress feedback.
+- **Applies to:** project
+
+## [D-031] 2026-11-03 — Network Counters, Density Tracker & Vendors Panel
+- **Status:** accepted
+- **Context:** User requested total network counter, new APs discovered count, vendor list, and rolling density metrics.
+- **Design Choices:**
+  - Top Summary Cards: `NetworkCountersBar` on the Live screen displaying Total Networks, New Discovered networks (unseen in WiGLE DB), and current rolling AP Density per minute (with session Peak).
+  - Tappable navigation shortcuts: Tapping Total Networks jumps directly to the Vendors view; tapping Density jumps directly to the Density history graph.
+  - Vendors Panel: Full-screen interactive breakdown grouping active devices by IEEE OUI / Bluetooth company IDs with monogram badges, radio distribution (Wi-Fi vs. BT), best RSSI, randomized MAC indicators, and tap-to-inspect drilldown.
+- **Applies to:** project
+
+

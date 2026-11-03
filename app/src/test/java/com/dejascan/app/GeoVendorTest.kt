@@ -110,4 +110,63 @@ class GeoVendorTest {
         assertEquals("?", Vendors.monogram(null))
         assertEquals("?", Vendors.monogram(""))
     }
+
+    @Test fun groupSightingsByVendorCategorizesCorrectly() {
+        val s1 = com.dejascan.app.scan.Sighting(
+            mac = "02:00:00:00:00:01", // randomized MAC
+            name = "Phone",
+            type = "W",
+            randomised = true,
+            rssi = -60,
+            time = 1000L,
+            firstSeen = 1000L,
+            best = -55,
+            count = 1,
+            history = emptyList(),
+            freq = 2412,
+            adv = emptyList(),
+            wigleLastTime = 0L,
+            lat = 0.0,
+            lon = 0.0,
+        )
+        val s2 = com.dejascan.app.scan.Sighting(
+            mac = "00:00:00:00:00:01", // unknown OUI
+            name = "UnknownDev",
+            type = "B",
+            randomised = false,
+            rssi = -80,
+            time = 1000L,
+            firstSeen = 1000L,
+            best = -80,
+            count = 1,
+            history = emptyList(),
+            freq = 0,
+            adv = emptyList(),
+            wigleLastTime = 0L,
+            lat = 0.0,
+            lon = 0.0,
+        )
+        val groups = com.dejascan.app.ui.groupSightingsByVendor(listOf(s1, s2))
+        assertEquals(2, groups.size)
+        val randGroup = groups.firstOrNull { it.isRandomized }
+        assertNotNull(randGroup)
+        assertEquals(1, randGroup!!.totalCount)
+        assertEquals(1, randGroup.wifiCount)
+        assertEquals(0, randGroup.btCount)
+        assertEquals("RM", randGroup.monogram)
+
+        // Test filtering
+        val wifiOnly = com.dejascan.app.ui.groupSightingsByVendor(listOf(s1, s2), typeFilter = "W")
+        assertEquals(1, wifiOnly.size)
+        assertEquals("Randomized (Private MAC)", wifiOnly[0].name)
+
+        val btOnly = com.dejascan.app.ui.groupSightingsByVendor(listOf(s1, s2), typeFilter = "BT")
+        assertEquals(1, btOnly.size)
+        assertEquals("Unknown OUI", btOnly[0].name)
+
+        // Test search
+        val searched = com.dejascan.app.ui.groupSightingsByVendor(listOf(s1, s2), query = "Phone")
+        assertEquals(1, searched.size)
+        assertEquals("Randomized (Private MAC)", searched[0].name)
+    }
 }

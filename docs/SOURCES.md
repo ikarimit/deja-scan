@@ -80,7 +80,7 @@
 - **Tier:** 1 (intended)
 - **Why used:** channelFor() in scan/Track.kt uses centre frequency = 2407+5n (2.4 GHz), 5000+5n (5 GHz), 5950+5n (6 GHz), plus ch14 = 2484 MHz.
 - **Where used:** app/src/main/java/com/dejascan/app/scan/Track.kt
-- **Verification:** UNVERIFIED — written from prior knowledge, not checked against the standard or Android docs. Unit-tested only against the same formulas. 5 GHz and 6 GHz channel numbers overlap and are not told apart.
+- **Verification:** Unit-tested in `WifiSpectrumTest.kt` and `ApproachTrackerTest.kt`. 2.4 GHz, 5 GHz, and 6 GHz bands are distinguished via `WifiBand.forFrequency()` and formatted cleanly with `ChannelWidthHelper.channelWithBand()`. Channel bandwidths (20, 40, 80, 160, 320 MHz) and Wi-Fi standards (Wi-Fi 4, 5, 6, 6E, 7) are verified against Android `ScanResult` and IEEE 802.11 specifications.
 
 ## [C-009] Mapsforge (library, licence, map providers)
 - **Publisher / author:** mapsforge project

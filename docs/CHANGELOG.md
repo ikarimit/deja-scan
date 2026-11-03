@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-11-03 — WiGLE Database Merger, Root Detection, Network Counters & Vendors View
+- **Changed:**
+  - **WiGLE SQLite Merger (`WigleMerger`):** Two-way synchronization allowing live scan findings and GPS sightings to be merged directly back into the linked WiGLE `.sqlite` database from the Devices tab. Updates `location` observations and `network` records (BSSID, SSID, frequency, capabilities, best level/coordinates, last seen time/coordinates), regenerates local spatial cell indexes, and marks merged MACs as known in the session.
+  - **Root Status Detection (`RootDetector`):** Non-intrusive environment check inspecting `Build.TAGS` for `test-keys`, probing known su binary locations (`/sbin/su`, `/system/bin/su`, `/system/xbin/su`, `/data/local/xbin/su`, Magisk `/data/adb/magisk`, KernelSU `/data/adb/ksu`, APatch `/data/adb/ap`), validating `PATH`, and testing execution. Displays a `ROOT` / `NON-ROOT` indicator chip in the header with tap feedback.
+  - **Live Network Counters Bar & Density Tracking (`NetworkCountersBar`, `DensityTracker`):** Added real-time summary cards at the top of the Live screen displaying Total Networks heard (Wi-Fi + BT), New Discovered networks (not previously stored in the WiGLE DB), and rolling AP Density (unique APs/minute with session peak). Tapping Total Networks jumps to the Vendors view; tapping AP Density jumps to the Density rolling graph.
+  - **Vendors Panel (`VendorPanel` / `LiveView.VENDORS`):** Added a new live view grouping discovered devices by manufacturer using the IEEE OUI registry and Bluetooth SIG company tables. Shows device counts (Wi-Fi vs. BT), monogram badges, color coding, randomized MAC badges, and expandable device lists with 1-tap inspection.
+  - **Permission UX & Background Indicator:** Refined permission flows to request required permissions just-in-time when starting the scanner, and added a visual `BG ON` / `BG OFF` status toggle button.
+- **Why:** User requested checking root, merging into the WiGLE database, total network counter, new APs discovered, vendors shown list, and permission UX improvements.
+- **Status:** built, 67 unit tests pass.
+
+## 2026-11-03 — Passive Wi-Fi Security Vulnerability Notifications & WEP Alerts
+- **Changed:** Added comprehensive passive notification system for Wi-Fi access points with WEP or security vulnerabilities (unencrypted Open networks, WPS PIN/brute-force exposure, deprecated TKIP ciphers, and ad-hoc networks).
+  - Background/foreground `ScanService`: Creates silent `CH_SECURITY` notification channel (`IMPORTANCE_LOW`, no vibration, no sound) and automatically updates the ongoing foreground notification with detected insecure network tallies. Posts a silent security advisory notification with expandable details when vulnerable APs are heard; automatically dismisses when out of range. Tapping notification opens the app and selects the vulnerable AP in `MainActivity`.
+  - In-App `SecurityAdvisoryBanner`: Displayed on `LiveScreen` (portrait and landscape) when insecure APs are in range. Alerts the user to broken WEP encryption or open networks with an "INSPECT" button, expandable list for multiple APs, and session dismiss action.
+  - View Badges: `RadarPanel` blips draw pulsing warning rings around WEP/insecure APs and append `[WEP!]` to selected labels; `BarsPanel` displays red `WEP` / amber `OPEN` tags; `SpectrumPanel` AP list displays prominent `[WEP ⚠️]` and `[OPEN ⚠️]` chips; `VendorPanel` highlights insecure Wi-Fi suites.
+  - `InfoPanel` Security Advisory: Detailed breakdown displaying vulnerability severity (CRITICAL, HIGH, MEDIUM, LOW), technical explanation (RC4 IV collisions, FMS/PTW key recovery, plaintext packet capture, WPS PIN brute force), and actionable mitigation recommendations.
+- **Why:** User requested a passive way to notify the user when an AP has WEP or a security issue.
+- **Status:** built, 67 unit tests pass.
+
+## 2026-11-02 — Wi-Fi 6 / 6E / 7 (6 GHz) & Channel Bandwidth Spectrum Scanning
+- **Changed:** Added device Wi-Fi capability detection (`is5GHzBandSupported`, `is6GHzBandSupported`, `isWifiStandardSupported` for 802.11ax and 802.11be), Wi-Fi standard detection (Wi-Fi 4, 5, 6, 6E, 7), channel bandwidth extraction and visualization (20, 40, 80, 160, 320 MHz). Rebuilt SPECTRUM live view into a full Channel Bandwidth Spectrum Scanner with 2.4 GHz, 5 GHz, and 6 GHz band selection, 6 GHz sub-bands (U-NII-5 through 8), device capability status chips, filter toggle (ALL/WATCHED), view toggle (CURVES/BARS), OFDM bandwidth curves with flat top and skirts, channel tick grid, and interactive AP row list. Info panel displays standard, band/channel, and frequency span with bonded center frequency.
+- **Why:** User requested Wi-Fi 6 / 6E / 7 (6 GHz) and channel bandwidth spectrum scanning with device support detection.
+- **Status:** built, 56 unit tests pass.
+
 ## 2026-11-01 — Prepared for GitHub
 - **Changed:** Added README, MIT LICENSE, .gitignore (local.properties, build output, databases, map files, generated name tables), scripts/fetch_vendor_data.py (downloads the IEEE and Bluetooth SIG data; tested by download on 2026-11-01: companies identical apart from 5 names where double spaces are now collapsed, vendor records a superset with 6 newer entries). The name tables are no longer committed. A mention of a country-specific map file was generalised in this log.
 - **Why:** User asked to publish privately with PII removed (D-026).

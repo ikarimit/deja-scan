@@ -26,6 +26,9 @@ import com.dejascan.app.data.DejaDb
 import com.dejascan.app.data.Prefs
 import com.dejascan.app.data.WatchMode
 import com.dejascan.app.data.WigleImporter
+import com.dejascan.app.data.WigleMerger
+import com.dejascan.app.scan.RootDetector
+import com.dejascan.app.scan.WifiCapabilities
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,6 +38,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val db = DejaDb(app)
     private val prefs = Prefs(app)
 
+    var wifiCapabilities by mutableStateOf(WifiCapabilities.detect(app)); private set
+    var isRooted by mutableStateOf(RootDetector.isRooted); private set
     var mode by mutableStateOf(prefs.mode); private set
     var types by mutableStateOf(prefs.types); private set
     var skipRandomised by mutableStateOf(prefs.skipRandomised); private set
@@ -83,6 +88,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         mapFiles = scanMaps()
+        viewModelScope.launch {
+            SightingBus.wifiCapabilities.collect { wifiCapabilities = it }
+        }
         viewModelScope.launch(Dispatchers.IO) {
             if (db.count() > 0 && (!db.cellsReady() || (db.obsCount() > 0 && !db.linkedReady()))) indexCells()
         }
@@ -396,20 +404,127 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Remember a WiGLE file (kept readable across restarts) and import it. */
+    /** Remember a WiGLE file (kept readable and writable across restarts) and import it. */
     fun linkFile(uri: Uri) {
+        val resolver = getApplication<Application>().contentResolver
         try {
-            getApplication<Application>().contentResolver
-                .takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        } catch (e: SecurityException) {
-            status = "Could not keep access to that file: ${e.message}"
-            return
+            resolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+        } catch (_: SecurityException) {
+            try {
+                resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e: SecurityException) {
+                status = "Could not keep access to that file: ${e.message}"
+                return
+            }
         }
         prefs.linkedUri = uri.toString()
         prefs.linkedModified = 0L
         prefs.linkedName = queryMeta(uri)?.first ?: uri.lastPathSegment.orEmpty()
         linkedName = prefs.linkedName
         refreshLinked(force = true)
+    }
+
+    /** Merges live findings (sightings and recorded positions) into the linked WiGLE SQLite file. */
+    fun mergeFindingsIntoLinked() {
+        val raw = prefs.linkedUri
+        if (raw.isEmpty()) {
+            status = "No file linked yet. Use Link WiGLE file."
+            return
+        }
+        if (busy) return
+        busy = true
+        status = "Merging findings into linked file..."
+        viewModelScope.launch(Dispatchers.IO) {
+            val uri = Uri.parse(raw)
+            val resolver = getApplication<Application>().contentResolver
+            val cache = File(getApplication<Application>().cacheDir, "merge.sqlite")
+            var msg: String
+            try {
+                val input = resolver.openInputStream(uri)
+                    ?: throw IllegalStateException("Cannot open linked file for reading")
+                input.use { i -> cache.outputStream().use { o -> i.copyTo(o) } }
+
+                val allSightings = SightingBus.sightings.value.values
+                val allSights = try { db.allSights() } catch (_: Exception) { emptyList() }
+
+                if (allSightings.isEmpty() && allSights.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        status = "No new sightings or locations to merge."
+                        busy = false
+                    }
+                    return@launch
+                }
+
+                val res = WigleMerger.merge(cache, allSightings, allSights) { m ->
+                    viewModelScope.launch(Dispatchers.Main) { status = m }
+                }
+
+                val outStream = try {
+                    resolver.openOutputStream(uri, "wt")
+                } catch (_: Exception) {
+                    try {
+                        resolver.openOutputStream(uri, "rwt")
+                    } catch (_: Exception) {
+                        resolver.openOutputStream(uri, "w")
+                    }
+                } ?: throw IllegalStateException("Cannot open linked file for writing. Ensure write permissions.")
+
+                outStream.use { out ->
+                    cache.inputStream().use { inp ->
+                        inp.copyTo(out)
+                    }
+                }
+
+                val meta = queryMeta(uri)
+                prefs.linkedModified = meta?.second ?: System.currentTimeMillis()
+
+                val newDevices = allSightings.map { s ->
+                    Device(
+                        mac = s.mac,
+                        name = if (s.name != s.mac) s.name else "",
+                        type = s.type,
+                        lastTime = s.time,
+                        lat = s.lat,
+                        lon = s.lon,
+                        randomised = s.randomised,
+                        watched = s.watched,
+                    )
+                }
+                db.upsertBatch(newDevices.asSequence())
+
+                val obsRows = allSights.map { ObsRow(it.mac, it.time, it.lat, it.lon, it.rssi) }
+                db.insertObsBatch(obsRows)
+
+                try {
+                    db.rebuildCells()
+                    db.rebuildLinked()
+                } catch (_: Exception) {}
+
+                val known = db.filterKnown(SightingBus.sightings.value.keys)
+                withContext(Dispatchers.Main) {
+                    SightingBus.markKnown(known)
+                }
+
+                msg = "Merged into ${prefs.linkedName}: ${res.newNetworks} new networks, ${res.updatedNetworks} updated, ${res.newLocations} locations added."
+            } catch (e: Exception) {
+                msg = "Merge failed: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                cache.delete()
+            }
+            prefs.lastImport = msg
+            val list = db.search(query)
+            val n = db.count()
+            withContext(Dispatchers.Main) {
+                status = msg
+                devices = list
+                total = n
+                busy = false
+                dataVersion++
+            }
+        }
     }
 
     /** Re-imports the linked file if its modified time changed (or always when [force]). */
@@ -474,6 +589,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (msg.startsWith("Imported")) {
                 withContext(Dispatchers.Main) { status = "Indexing devices for the map..." }
                 try { db.rebuildCells(); db.rebuildLinked() } catch (e: Exception) { /* the map falls back to an empty overview */ }
+                val known = db.filterKnown(SightingBus.sightings.value.keys)
+                withContext(Dispatchers.Main) { SightingBus.markKnown(known) }
             }
             val list = db.search(query)
             val n = db.count()
