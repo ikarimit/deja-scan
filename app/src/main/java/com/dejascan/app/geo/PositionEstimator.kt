@@ -1,6 +1,5 @@
 package com.dejascan.app.geo
 
-import kotlin.math.PI
 import kotlin.math.asin
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -124,7 +123,4 @@ object PositionEstimator {
         val mean = r.average()
         return r.sumOf { (it - mean).pow(2) }
     }
-
-    @Suppress("unused")
-    private val keepPi = PI
 }

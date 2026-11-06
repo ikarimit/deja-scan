@@ -195,4 +195,29 @@
   - Vendors Panel: Full-screen interactive breakdown grouping active devices by IEEE OUI / Bluetooth company IDs with monogram badges, radio distribution (Wi-Fi vs. BT), best RSSI, randomized MAC indicators, and tap-to-inspect drilldown.
 - **Applies to:** project
 
+## [D-032] 2026-11-05 — Merge Preparation: Remove Spectrum Analyzer, Condense UI, Minimize Notifications & 6-Tier Color Classification
+- **Status:** accepted (supersedes Spectrum UI in D-019/D-027 and system security notifications in D-028)
+- **Context:** User requested preparing the `testing` branch to merge into `main` by removing the Wi-Fi spectrum analyzer while keeping channel number + channel width across other tabs (such as Map), condensing/compartmentalizing the UI, minimizing notifications, and applying distinct color schemes for rarity, outdated WEP, potential attackers (Pwnagotchi, etc.), randomized MACs, and normal networks.
+- **Design Choices:**
+  - **Spectrum Analyzer Removal + Channel/Width Retention:** Removed `SpectrumPanel` (`LiveView.SPECTRUM`), kept `ChannelWidthHelper.formatChannelWidth` (`Ch X • YYMHz`), changed unknown `Sighting.channelWidth` default to `-1` (distinguishing unknown stored WiGLE records from `0` = `20 MHz`), and upgraded `DejaDb` to v7 (`freq`, `caps`) so channel and security details render across `Map`, `Devices`, `Live`, and `InfoPanel`.
+  - **6-Tier Detection Classification (`DetectionClassifier`):** Priority-ordered categories: `ATTACKER` (`#FF2A55`), `WEP` (`#FF6D00`), `RARE` (`#FFD600`), `UNCOMMON` (`#00E5FF`), `RANDOMIZED` (`#B388FF`), and `NORMAL` (`#39FF88`).
+  - **UI Compartmentalization:** Consolidated Live into 4 views (`RADAR`, `SIGNALS`, `ACTIVITY`, `VENDORS`) with on-demand `DeviceDetails`; grouped `Devices` config into collapsible `Watch & Notification Rules` and `WiGLE Database Sync` cards; grouped `Map` toggles into a collapsible `LAYERS` menu.
+  - **Minimal Notifications:** Removed `CH_SECURITY` channel, lowered `CH_ONGOING` to `IMPORTANCE_MIN`, suppressed alerts while foregrounded (`SightingBus.inForeground`), and added a 30 s rate-limited single `HIT_ID` summary controlled by `Prefs.notifyHits`.
+- **Applies to:** project
+
+## [D-033] 2026-11-05 — Passive Root / Promiscuous Mode Groundwork, Ethical Disclaimer & Codebase Optimization
+- **Status:** accepted (extends D-021 & D-029)
+- **Context:** User requested laying compartmentalized groundwork for root/promiscuous mode up to what a rooted Android system can do passively (control frame extraction, hidden SSID unmasking, client station tracking), adding an explicit legal/ethical disclaimer that the app does not condone illegal activities, and optimizing code across the app (removing unused symbols and redundant `if/else` checks).
+- **Design Choices:**
+  - **Compartmentalized Package (`com.dejascan.app.scan.promiscuous`):**
+    - `Dot11FrameParser`: Zero-dependency libpcap stream reader (`DLT_IEEE802_11_RADIO`, `DLT_IEEE802_11`, `DLT_PRISM_HEADER`), Radiotap parser (extended bitmaps, channel MHz, dBm RSSI, `RADIOTAP_F_FCS` trim, `RADIOTAP_F_BADFCS` rejection), and IEEE 802.11 Management / Control / Data MAC header + IE parser. Payloads are never decoded.
+    - `PromiscuousTracker` & `PromiscuousBus`: Bounded, thread-safe `StateFlow<PromiscuousSnapshot>` tracking control frame tallies (`RTS`, `CTS`, `ACK`, `BlockAck`, `PS-Poll`), passive `Deauth`/`Disassoc` counts + reason codes, hidden SSID unmasking (`Beacon` hidden BSSID correlated with `Probe Response` / `Assoc Req` / `Reassoc Req`), and client stations (`ToDS`/`FromDS` data headers, `PS-Poll`, probe requests).
+    - `PromiscuousMonitor`: Safe, strictly passive `su` capability probe and tiered interface setup: (1) existing radiotap monitor netdev, (2) concurrent `iw` virtual monitor VIF `dejamon0` (`flags none`, preserving normal Wi-Fi), (3) secondary OTG adapter or opt-in Qualcomm `con_mode=4`, (4) `ip link promisc on` fallback, with full state restoration on `stop()`.
+  - **UI Integration:** Added `ActivitySubView.MONITOR` (`MonitorPanel`) inside `Live -> Activity`, `RootPromiscuousCard` + legal footer in `Devices`, `-- 802.11 MONITOR --` in `InfoPanel`, and `ROOT • MON` status in `Header`.
+  - **Ethical Boundary & Disclaimer:** Strictly receive-only (zero packet injection or deauth transmission); added `LEGAL_NOTICE_SHORT` in-app and a dedicated *Legal & Ethical Use Notice* section in `README.md`.
+  - **Dead-Code & Control-Flow Cleanup:** Removed unused fields/methods/constants across `Track`, `SightingBus`, `PositionEstimator`, `DejaDb`, `WifiSecurity`, `WifiSpectrum`, `Theme`, `Terminal`, `Widgets`, `VendorPanel`, `MapPanel`, `InfoPanel`, and `Screens`.
+- **Applies to:** project
+
+
+
 

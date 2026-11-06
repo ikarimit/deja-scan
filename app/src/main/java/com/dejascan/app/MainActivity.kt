@@ -1,6 +1,7 @@
 package com.dejascan.app
 
 import android.Manifest
+import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -22,8 +23,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.dejascan.app.scan.ScanService
+import com.dejascan.app.scan.SightingBus
 import com.dejascan.app.ui.AppViewModel
 import com.dejascan.app.ui.DejaApp
 import com.dejascan.app.ui.DejaTheme
@@ -35,11 +40,22 @@ class MainActivity : ComponentActivity() {
     private fun granted(perm: String) =
         ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED
 
-    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+    private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
-    /** Android stops showing the permission dialog after it was refused, so send the user to the settings page. */
     private fun openAppSettings() {
         startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+    }
+
+    override fun onStart() {
+        super.onStart()
+        SightingBus.inForeground.value = true
+        // Clear any background hit notification once the user opens the app
+        getSystemService(NotificationManager::class.java)?.cancel(2)
+    }
+
+    override fun onStop() {
+        SightingBus.inForeground.value = false
+        super.onStop()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -76,15 +92,14 @@ class MainActivity : ComponentActivity() {
 
             DejaTheme(dark) {
                 var pendingStartScan by remember { mutableStateOf(false) }
-                var askedBgOnce by remember { mutableStateOf(false) }
                 var bgAllowed by remember {
                     mutableStateOf(granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION))
                 }
 
-                val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+                val lifecycleOwner = LocalLifecycleOwner.current
                 DisposableEffect(lifecycleOwner) {
-                    val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-                        if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME) {
                             bgAllowed = granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
                         }
                     }
@@ -96,33 +111,34 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.RequestPermission(),
                 ) { isGranted ->
                     bgAllowed = isGranted
-                    if (isGranted) toast("Background location allowed: scanning continues with screen off")
-                    else toast("Background location denied: scanning active while app is in foreground")
+                    if (!isGranted && !shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_BACKGROUND_LOCATION)) {
+                        openAppSettings()
+                    }
                 }
+
+                fun isPostNotifications(perm: String): Boolean =
+                    Build.VERSION.SDK_INT >= 33 && perm == Manifest.permission.POST_NOTIFICATIONS
 
                 val permLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions(),
                 ) { result ->
                     val denied = result.filterValues { !it }.keys
-                    if (denied.isEmpty()) {
+                    // Allow scanning even if optional POST_NOTIFICATIONS was declined
+                    val criticalDenied = denied.filterNot(::isPostNotifications)
+                    if (criticalDenied.isEmpty()) {
                         if (pendingStartScan) {
                             pendingStartScan = false
                             ScanService.start(this@MainActivity)
-                            // Prompt sequentially for background location if not yet allowed
-                            if (!granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION) && !askedBgOnce) {
-                                askedBgOnce = true
-                                bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-                            }
                         }
                     } else {
                         pendingStartScan = false
-                        val deniedNames = denied.map { it.substringAfterLast('.') }
-                        val permanentlyDenied = denied.any { !shouldShowRequestPermissionRationale(it) }
+                        val deniedNames = criticalDenied.map { it.substringAfterLast('.') }
+                        val permanentlyDenied = criticalDenied.any { !shouldShowRequestPermissionRationale(it) }
                         if (permanentlyDenied) {
-                            toast("Required permissions denied (${deniedNames.joinToString(", ")}). Opening App Settings...")
+                            toast("Grant ${deniedNames.joinToString(", ")} in Settings")
                             openAppSettings()
                         } else {
-                            toast("Scanning requires permissions: ${deniedNames.joinToString(", ")}")
+                            toast("Required: ${deniedNames.joinToString(", ")}")
                         }
                     }
                 }
@@ -152,14 +168,10 @@ class MainActivity : ComponentActivity() {
                         if (!start) {
                             ScanService.stop(this@MainActivity)
                         } else {
-                            // Request permissions at the exact time of needing them to scan
                             val missing = requiredScanPermissions().filter { !granted(it) }
-                            if (missing.isEmpty()) {
+                            val criticalMissing = missing.filterNot(::isPostNotifications)
+                            if (missing.isEmpty() || (criticalMissing.isEmpty() && SightingBus.running.value)) {
                                 ScanService.start(this@MainActivity)
-                                if (!granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION) && !askedBgOnce) {
-                                    askedBgOnce = true
-                                    bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
-                                }
                             } else {
                                 pendingStartScan = true
                                 permLauncher.launch(missing.toTypedArray())
@@ -170,7 +182,7 @@ class MainActivity : ComponentActivity() {
                     onRequestBackground = {
                         if (granted(Manifest.permission.ACCESS_BACKGROUND_LOCATION)) {
                             bgAllowed = true
-                            toast("Background location is already allowed")
+                            toast("Background scanning enabled")
                         } else {
                             bgLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
                         }

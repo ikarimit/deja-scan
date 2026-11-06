@@ -24,6 +24,8 @@ data class Device(
     val lon: Double,
     val randomised: Boolean,
     val watched: Boolean,
+    val freq: Int = 0,
+    val caps: String = "",
 )
 
 /** One WiGLE observation (a place a device was recorded). */
@@ -37,13 +39,11 @@ data class GeoCell(val count: Int, val lat: Double, val lon: Double, val mac: St
 
 data class DayHit(val mac: String, val lat: Double, val lon: Double, val time: Long)
 
-data class PointCounts(val wigle: Int, val own: Int)
-
 /**
  * Our own database, filled from a WiGLE database. WiGLE type codes: W=Wi-Fi, B=Bluetooth, E=BLE.
  * Tables: device (one row per device), obs (WiGLE observations), sight (this app's own sightings).
  */
-class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
+class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 7) {
 
     /** Write-ahead logging lets the scan service read while an import is writing. */
     override fun onConfigure(db: SQLiteDatabase) {
@@ -60,7 +60,9 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
                 "lat REAL NOT NULL," +
                 "lon REAL NOT NULL," +
                 "random INTEGER NOT NULL," +
-                "watched INTEGER NOT NULL DEFAULT 0)"
+                "watched INTEGER NOT NULL DEFAULT 0," +
+                "freq INTEGER NOT NULL DEFAULT 0," +
+                "caps TEXT NOT NULL DEFAULT '')"
         )
         db.execSQL("CREATE INDEX idx_device_type ON device(type)")
         db.execSQL("CREATE INDEX idx_device_pos ON device(lat, lon)")
@@ -76,6 +78,12 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
         if (oldVersion < 4) createV4(db)
         if (oldVersion < 5) createV5(db)
         if (oldVersion < 6) createV6(db)
+        if (oldVersion < 7) createV7(db)
+    }
+
+    private fun createV7(db: SQLiteDatabase) {
+        runCatching { db.execSQL("ALTER TABLE device ADD COLUMN freq INTEGER NOT NULL DEFAULT 0") }
+        runCatching { db.execSQL("ALTER TABLE device ADD COLUMN caps TEXT NOT NULL DEFAULT ''") }
     }
 
     /** Pre-counted map cells (see CellGrid), rebuilt after every import. */
@@ -136,21 +144,25 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
         db.beginTransaction()
         try {
             val ins = db.compileStatement(
-                "INSERT OR IGNORE INTO device(mac,name,type,lasttime,lat,lon,random,watched) VALUES(?,?,?,?,?,?,?,0)"
+                "INSERT OR IGNORE INTO device(mac,name,type,lasttime,lat,lon,random,watched,freq,caps) VALUES(?,?,?,?,?,?,?,0,?,?)"
             )
             val upd = db.compileStatement(
-                "UPDATE device SET name=?,type=?,lasttime=?,lat=?,lon=?,random=? WHERE mac=?"
+                "UPDATE device SET name=?,type=?,lasttime=?,lat=?,lon=?,random=?,freq=CASE WHEN ?!=0 THEN ? ELSE freq END,caps=CASE WHEN ?!='' THEN ? ELSE caps END WHERE mac=?"
             )
             for (d in rows) {
                 ins.clearBindings()
                 ins.bindString(1, d.mac); ins.bindString(2, d.name); ins.bindString(3, d.type)
                 ins.bindLong(4, d.lastTime); ins.bindDouble(5, d.lat); ins.bindDouble(6, d.lon)
                 ins.bindLong(7, if (d.randomised) 1 else 0)
+                ins.bindLong(8, d.freq.toLong()); ins.bindString(9, d.caps)
                 ins.executeInsert()
                 upd.clearBindings()
                 upd.bindString(1, d.name); upd.bindString(2, d.type); upd.bindLong(3, d.lastTime)
                 upd.bindDouble(4, d.lat); upd.bindDouble(5, d.lon)
-                upd.bindLong(6, if (d.randomised) 1 else 0); upd.bindString(7, d.mac)
+                upd.bindLong(6, if (d.randomised) 1 else 0)
+                upd.bindLong(7, d.freq.toLong()); upd.bindLong(8, d.freq.toLong())
+                upd.bindString(9, d.caps); upd.bindString(10, d.caps)
+                upd.bindString(11, d.mac)
                 upd.executeUpdateDelete()
                 n++
             }
@@ -311,7 +323,7 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
     }
 
     private fun key(cx: Int, cy: Int, type: String): Long =
-        (cx.toLong() * 1_048_576L + cy) * 4 + (if (type == "W") 0 else if (type == "B") 1 else 2)
+        (cx.toLong() * 1_048_576L + cy) * 4 + when (type) { "W" -> 0; "B" -> 1; else -> 2 }
 
     /** Pre-counted cells of one zoom level inside a cell range, summed over the wanted types. */
     fun cellsInView(z: Int, cxMin: Int, cxMax: Int, cyMin: Int, cyMax: Int, types: Set<String>, linkedOnly: Boolean = false): List<GeoCell> {
@@ -524,16 +536,6 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
             out
         }
 
-    fun counts(macs: Collection<String>): Map<String, PointCounts> {
-        val out = HashMap<String, PointCounts>()
-        for (m in macs) {
-            val w = readableDatabase.rawQuery("SELECT COUNT(*) FROM obs WHERE mac=?", arrayOf(m)).use { if (it.moveToFirst()) it.getInt(0) else 0 }
-            val o = readableDatabase.rawQuery("SELECT COUNT(*) FROM sight WHERE mac=?", arrayOf(m)).use { if (it.moveToFirst()) it.getInt(0) else 0 }
-            out[m] = PointCounts(w, o)
-        }
-        return out
-    }
-
     private fun toList(c: android.database.Cursor): List<Device> {
         val out = ArrayList<Device>()
         while (c.moveToNext()) {
@@ -542,6 +544,7 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
                     mac = c.getString(0), name = c.getString(1), type = c.getString(2),
                     lastTime = c.getLong(3), lat = c.getDouble(4), lon = c.getDouble(5),
                     randomised = c.getInt(6) != 0, watched = c.getInt(7) != 0,
+                    freq = c.getInt(8), caps = c.getString(9).orEmpty(),
                 )
             )
         }
@@ -549,6 +552,6 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
     }
 
     private companion object {
-        const val COLS = "mac,name,type,lasttime,lat,lon,random,watched"
+        const val COLS = "mac,name,type,lasttime,lat,lon,random,watched,freq,caps"
     }
 }

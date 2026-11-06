@@ -2,52 +2,42 @@ package com.dejascan.app.ui
 
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.LocalContentColor
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.launch
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.background
 import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.rememberDatePickerState
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.DatePickerDialog
-import androidx.compose.material3.DatePicker
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -58,29 +48,42 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dejascan.app.data.Device
 import com.dejascan.app.data.Vendors
-import com.dejascan.app.geo.Estimate
 import com.dejascan.app.data.WatchMode
-import com.dejascan.app.scan.MacUtil
+import com.dejascan.app.scan.ChannelWidthHelper
+import com.dejascan.app.scan.Classification
+import com.dejascan.app.scan.DetectionCategory
+import com.dejascan.app.scan.DetectionClassifier
 import com.dejascan.app.scan.SecuritySuite
 import com.dejascan.app.scan.Sighting
 import com.dejascan.app.scan.SightingBus
+import com.dejascan.app.scan.WifiSecurity
+import com.dejascan.app.scan.promiscuous.PromiscuousBus
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun DejaApp(
@@ -121,7 +124,6 @@ fun DejaApp(
             }
         },
     ) { pad ->
-        // the map runs under the side bars/cutout; its overlays add their own safe-area padding
         val content = if (tab == 2) {
             Modifier.padding(top = pad.calculateTopPadding(), bottom = pad.calculateBottomPadding())
         } else Modifier.padding(pad)
@@ -144,290 +146,109 @@ private fun Header(
     title: String,
     subtitle: String,
     vm: AppViewModel,
-    dotColor: androidx.compose.ui.graphics.Color,
-    extra: (@Composable () -> Unit)? = null,
+    dotColor: Color,
+    onRootClick: (() -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = null,
 ) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Column(Modifier.weight(1f)) {
             MText(
                 title, color = MaterialTheme.colorScheme.primary, weight = FontWeight.Bold,
-                size = 22.sp, letterSpacing = 3.sp,
+                size = 19.sp, letterSpacing = 2.sp,
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(8.dp).background(dotColor, CircleShape))
-                MText(
-                    subtitle, Modifier.padding(start = 6.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, size = 12.sp,
-                )
-                if (extra != null) {
-                    Spacer(Modifier.width(8.dp))
-                    extra()
-                }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box(Modifier.size(7.dp).background(dotColor, CircleShape))
+                MText(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, size = 11.sp)
+                RootIndicator(vm.isRooted, onClick = onRootClick)
             }
         }
-        IconButton(onClick = { vm.cycleTheme() }) {
+        IconButton(onClick = { vm.cycleTheme() }, modifier = Modifier.size(32.dp)) {
             DejaIcon(IconKind.THEME, MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Text(
-            when (vm.themeMode) { ThemeMode.SYSTEM -> "AUTO"; ThemeMode.LIGHT -> "LIGHT"; ThemeMode.DARK -> "DARK" },
-            color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall,
-        )
+        trailing?.invoke()
     }
 }
 
 @Composable
-private fun RootIndicator(isRooted: Boolean, modifier: Modifier = Modifier) {
+private fun RootIndicator(
+    isRooted: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+) {
     val context = LocalContext.current
-    val borderColor = if (isRooted) Phosphor.green.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outlineVariant
-    val dotColor = if (isRooted) Phosphor.green else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-    val textColor = if (isRooted) Phosphor.green else MaterialTheme.colorScheme.onSurfaceVariant
+    val monSnap by PromiscuousBus.snapshot.collectAsState()
+    val monActive = monSnap.state.isActive
+    val accent = when {
+        monActive -> Phosphor.cyan
+        isRooted -> Phosphor.green
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val borderColor = if (isRooted) accent.copy(alpha = 0.55f) else MaterialTheme.colorScheme.outlineVariant
+    val dotColor = if (isRooted) accent else accent.copy(alpha = 0.6f)
+    val label = when {
+        monActive -> "ROOT • MON"
+        isRooted -> "ROOT"
+        else -> "USER"
+    }
 
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(4.dp))
             .background(
-                if (isRooted) Phosphor.green.copy(alpha = 0.12f)
+                if (isRooted) accent.copy(alpha = 0.12f)
                 else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
             )
             .border(1.dp, borderColor, RoundedCornerShape(4.dp))
             .clickable {
-                val msg = if (isRooted) "Device is rooted (superuser access detected)" else "Device is not rooted (standard user)"
-                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                if (onClick != null) {
+                    onClick()
+                } else {
+                    val msg = when {
+                        monActive -> "${monSnap.state.label} active on ${monSnap.activeInterface}"
+                        isRooted -> "Device is rooted (passive 802.11 monitor available)"
+                        else -> "Device is not rooted (standard Android scan mode)"
+                    }
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                }
             }
-            .padding(horizontal = 5.dp, vertical = 1.5.dp),
+            .padding(horizontal = 5.dp, vertical = 1.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(3.5.dp),
-        ) {
-            Box(Modifier.size(5.dp).background(dotColor, CircleShape))
-            MText(
-                text = if (isRooted) "ROOT" else "NON-ROOT",
-                color = textColor,
-                size = 9.sp,
-                weight = FontWeight.Bold,
-            )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            Box(Modifier.size(4.5.dp).background(dotColor, CircleShape))
+            MText(label, color = accent, size = 8.5.sp, weight = FontWeight.Bold)
         }
     }
 }
 
 @Composable
-private fun DejaCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+private fun DejaCard(modifier: Modifier = Modifier, borderColor: Color? = null, content: @Composable () -> Unit) {
     Card(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        border = BorderStroke(1.dp, borderColor ?: MaterialTheme.colorScheme.outlineVariant),
     ) { content() }
 }
 
 @Composable
-private fun TypeBadge(type: String) {
-    Box(
-        Modifier.size(40.dp).background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
-        contentAlignment = Alignment.Center,
-    ) { DejaIcon(iconKindForType(type), MaterialTheme.colorScheme.primary) }
-}
-
-@Composable
-private fun NetworkCountersBar(
-    totalNetworks: Int,
-    newNetworks: Int,
-    apDensity: Int,
-    peakDensity: Int,
-    subNetworks: String = "VENDORS",
-    subNetworksColor: androidx.compose.ui.graphics.Color? = null,
-    onNetworksClick: (() -> Unit)? = null,
-    onDensityClick: (() -> Unit)? = null,
-    modifier: Modifier = Modifier,
-) {
+private fun CategoryPill(cat: DetectionCategory, count: Int, onClick: () -> Unit) {
+    val col = Phosphor.forCategory(cat)
     Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(col.copy(alpha = 0.13f))
+            .border(1.dp, col.copy(alpha = 0.55f), RoundedCornerShape(6.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 7.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        CounterCard(
-            title = "TOTAL NETWORKS",
-            value = "$totalNetworks",
-            color = MaterialTheme.colorScheme.primary,
-            sub = subNetworks,
-            subColor = subNetworksColor,
-            onClick = onNetworksClick,
-            modifier = Modifier.weight(1f),
-        )
-        CounterCard(
-            title = "NEW DISCOVERED",
-            value = "$newNetworks",
-            color = Phosphor.amber,
-            modifier = Modifier.weight(1f),
-        )
-        CounterCard(
-            title = "AP DENSITY",
-            value = "$apDensity/m",
-            color = Phosphor.cyan,
-            sub = "PEAK $peakDensity",
-            onClick = onDensityClick,
-            modifier = Modifier.weight(1f),
-        )
+        Box(Modifier.size(6.dp).background(col, CircleShape))
+        MText("${cat.shortTag} $count", color = col, size = 9.5.sp, weight = FontWeight.Bold)
     }
 }
 
-@Composable
-private fun CounterCard(
-    title: String,
-    value: String,
-    color: androidx.compose.ui.graphics.Color,
-    sub: String? = null,
-    subColor: androidx.compose.ui.graphics.Color? = null,
-    onClick: (() -> Unit)? = null,
-    modifier: Modifier = Modifier,
-) {
-    Card(
-        modifier = modifier.then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
-        shape = RoundedCornerShape(10.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column(
-            Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Text(
-                title,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 8.5.sp,
-                fontWeight = FontWeight.Medium,
-                letterSpacing = 0.5.sp,
-                maxLines = 1,
-            )
-            Text(
-                value,
-                color = color,
-                fontSize = 16.sp,
-                fontFamily = Mono,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-            )
-            if (sub != null) {
-                Text(
-                    sub,
-                    color = subColor ?: MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 8.sp,
-                    fontFamily = Mono,
-                    fontWeight = if (subColor != null) FontWeight.Bold else FontWeight.Normal,
-                    maxLines = 1,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SecurityAdvisoryBanner(
-    insecureAps: List<Sighting>,
-    onSelect: (String) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    if (insecureAps.isEmpty()) return
-    val wepAps = remember(insecureAps) { insecureAps.filter { it.isWep } }
-    val hasWep = wepAps.isNotEmpty()
-    val top = insecureAps.first()
-
-    var dismissed by rememberSaveable { mutableStateOf(false) }
-    var expanded by remember { mutableStateOf(false) }
-
-    if (dismissed) return
-
-    val borderColor = if (hasWep) Phosphor.red else Phosphor.amber
-    val bgColor = borderColor.copy(alpha = 0.12f)
-
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(10.dp),
-        colors = CardDefaults.cardColors(containerColor = bgColor),
-        border = BorderStroke(1.dp, borderColor.copy(alpha = 0.7f)),
-    ) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)) {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                MText(if (hasWep) "⚠️" else "🛡️", size = 13.sp)
-                Column(Modifier.weight(1f)) {
-                    val title = if (hasWep) {
-                        "SECURITY ADVISORY • ${wepAps.size} WEP NETWORK${if (wepAps.size > 1) "S" else ""}"
-                    } else {
-                        "SECURITY ADVISORY • ${insecureAps.size} INSECURE AP${if (insecureAps.size > 1) "S" else ""}"
-                    }
-                    MText(title, color = borderColor, size = 10.sp, weight = FontWeight.Bold, maxLines = 1)
-                    val sub = if (hasWep) {
-                        val firstWep = wepAps.first()
-                        "${firstWep.name} (${firstWep.mac}) • Broken encryption"
-                    } else {
-                        "${top.name} • ${top.primarySecurityIssue?.summary ?: "Insecure Wi-Fi"}"
-                    }
-                    MText(sub, color = Phosphor.text, size = 9.sp, maxLines = 1)
-                }
-                OutlinedButton(
-                    onClick = { onSelect(if (hasWep) wepAps.first().mac else top.mac) },
-                    shape = RoundedCornerShape(6.dp),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                    border = BorderStroke(1.dp, borderColor),
-                    modifier = Modifier.height(28.dp),
-                ) {
-                    MText("INSPECT", color = borderColor, size = 9.sp, weight = FontWeight.Bold)
-                }
-                if (insecureAps.size > 1) {
-                    Box(
-                        Modifier
-                            .size(24.dp)
-                            .clickable { expanded = !expanded },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        MText(if (expanded) "▲" else "▼", color = Phosphor.sub, size = 10.sp)
-                    }
-                }
-                Box(
-                    Modifier
-                        .size(24.dp)
-                        .clickable { dismissed = true },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    MText("✕", color = Phosphor.dim, size = 11.sp, weight = FontWeight.Bold)
-                }
-            }
-            if (expanded && insecureAps.size > 1) {
-                Spacer(Modifier.height(4.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    insecureAps.take(5).forEach { ap ->
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .background(Phosphor.bg.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
-                                .clickable { onSelect(ap.mac) }
-                                .padding(horizontal = 6.dp, vertical = 3.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                                MText(if (ap.isWep) "WEP ⚠️" else ap.securitySuite.shortLabel, color = if (ap.isWep) Phosphor.red else Phosphor.amber, size = 8.5.sp, weight = FontWeight.Bold)
-                                MText(ap.name.take(16), color = Phosphor.text, size = 9.5.sp, maxLines = 1)
-                            }
-                            MText("${ap.rssi} dBm", color = Phosphor.forRssi(ap.rssi), size = 9.sp)
-                        }
-                    }
-                    if (insecureAps.size > 5) {
-                        MText("+ ${insecureAps.size - 5} more insecure networks in range", color = Phosphor.dim, size = 8.5.sp)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LiveScreen(
     vm: AppViewModel,
@@ -438,12 +259,49 @@ private fun LiveScreen(
     val running by SightingBus.running.collectAsState()
     val all by SightingBus.sightings.collectAsState()
     val message by SightingBus.message.collectAsState()
+    val ready by Vendors.ready.collectAsState()
     val now by produceState(System.currentTimeMillis()) {
         while (true) { delay(1000); value = System.currentTimeMillis() }
     }
-    val tracks = remember(all, now) {
-        all.values.filter { it.watched && now - it.time <= STALE_MS }.sortedByDescending { it.rssi }
+
+    val activeAll = remember(all, now) {
+        all.values.filter { now - it.time <= STALE_MS }.sortedByDescending { it.rssi }
     }
+    val watchedTracks = remember(activeAll) { activeAll.filter { it.watched } }
+
+    var radarShowAll by rememberSaveable { mutableStateOf(true) }
+    var signalFilter by rememberSaveable { mutableStateOf(SignalFilter.ALL) }
+    var activitySubView by rememberSaveable { mutableStateOf(ActivitySubView.SIGNAL) }
+
+    val classifications = remember(all, ready, vm.total) {
+        val fixedVendors = HashMap<String, Int>()
+        var fixedTotal = 0
+        for (s in all.values) {
+            if (!s.randomised) {
+                val v = Vendors.forMac(s.mac)
+                if (!v.isNullOrBlank()) {
+                    fixedVendors[v] = (fixedVendors[v] ?: 0) + 1
+                    fixedTotal++
+                }
+            }
+        }
+        val hasDb = vm.total > 0
+        all.values.associate { s ->
+            val v = Vendors.forMac(s.mac)
+            s.mac to DetectionClassifier.classify(
+                s = s,
+                hasDatabase = hasDb,
+                vendor = v,
+                vendorPeerCount = if (v != null) (fixedVendors[v] ?: 0) else 0,
+                totalFixedPeers = fixedTotal,
+            )
+        }
+    }
+
+    val categoryCounts = remember(activeAll, classifications) {
+        countByCategory(activeAll, classifications)
+    }
+
     val views = LiveView.entries
     val pager = rememberPagerState { views.size }
     val scope = rememberCoroutineScope()
@@ -456,255 +314,257 @@ private fun LiveScreen(
     }
     val totalNetworks = all.size
     val newNetworks = remember(all) { all.values.count { !it.inDatabase } }
-    val wifiAps = remember(all) { all.values.count { it.type == "W" } }
-    val newWifiAps = remember(all) { all.values.count { it.type == "W" && !it.inDatabase } }
 
-    val activeInsecure = remember(all, now) {
-        all.values.filter { it.type == "W" && now - it.time <= STALE_MS && it.hasSecurityIssue }
-            .sortedWith(compareBy({ it.primarySecurityIssue?.severity?.ordinal ?: 99 }, { -it.rssi }))
-    }
-    val activeWepCount = remember(activeInsecure) { activeInsecure.count { it.isWep } }
-    val activeOpenCount = remember(activeInsecure) { activeInsecure.count { it.isOpen } }
+    val topControls: @Composable () -> Unit = {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Header(
+                title = "DEJA SCAN",
+                subtitle = if (running) "${activeAll.size} LIVE" else "IDLE",
+                vm = vm,
+                dotColor = if (running) deja.strong else deja.weak,
+                onRootClick = if (vm.isRooted) {
+                    {
+                        activitySubView = ActivitySubView.MONITOR
+                        scope.launch { pager.animateScrollToPage(views.indexOf(LiveView.ACTIVITY)) }
+                    }
+                } else null,
+                trailing = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(
+                            onClick = onRequestBackground,
+                            modifier = Modifier.height(34.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp),
+                            border = BorderStroke(
+                                1.dp,
+                                if (hasBackgroundPermission) Phosphor.edge else Phosphor.amber.copy(alpha = 0.7f),
+                            ),
+                        ) {
+                            Box(
+                                Modifier.size(6.dp).background(
+                                    if (hasBackgroundPermission) Phosphor.green else Phosphor.amber,
+                                    CircleShape,
+                                )
+                            )
+                            MText(
+                                " BG",
+                                color = if (hasBackgroundPermission) Phosphor.text else Phosphor.amber,
+                                size = 9.5.sp,
+                                weight = FontWeight.Bold,
+                            )
+                        }
+                        Button(
+                            onClick = { onToggleScan(!running) },
+                            modifier = Modifier.height(34.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp),
+                            colors = if (running) ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                            ) else ButtonDefaults.buttonColors(),
+                        ) {
+                            MText(
+                                if (running) "STOP" else "SCAN",
+                                color = LocalContentColor.current,
+                                weight = FontWeight.Bold,
+                                letterSpacing = 1.sp,
+                                size = 11.sp,
+                            )
+                        }
+                    }
+                },
+            )
+            if (message.isNotEmpty()) {
+                MText(message, color = MaterialTheme.colorScheme.error, size = 10.5.sp)
+            }
 
-    val header: @Composable () -> Unit = {
-        Header(
-            title = "DEJA SCAN",
-            subtitle = if (running) "SCANNING" else "IDLE",
-            vm = vm,
-            dotColor = if (running) deja.strong else deja.weak,
-            extra = { RootIndicator(vm.isRooted) },
-        )
-    }
-    val countersBar: @Composable () -> Unit = {
-        NetworkCountersBar(
-            totalNetworks = totalNetworks,
-            newNetworks = newNetworks,
-            apDensity = currentApDensity,
-            peakDensity = peakDensity,
-            subNetworks = if (activeWepCount > 0) "$activeWepCount WEP (!)" else if (activeOpenCount > 0) "$activeOpenCount OPEN (!)" else "VENDORS",
-            subNetworksColor = if (activeWepCount > 0) Phosphor.red else if (activeOpenCount > 0) Phosphor.amber else MaterialTheme.colorScheme.onSurfaceVariant,
-            onNetworksClick = { scope.launch { pager.animateScrollToPage(views.indexOf(LiveView.VENDORS)) } },
-            onDensityClick = { scope.launch { pager.animateScrollToPage(views.indexOf(LiveView.DENSITY)) } },
-        )
-    }
-    val securityBanner: @Composable () -> Unit = {
-        SecurityAdvisoryBanner(activeInsecure, onSelect = { vm.select(it) })
-    }
-    val viewBar: @Composable () -> Unit = {
-        var open by remember { mutableStateOf(false) }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Box {
-                OutlinedButton(onClick = { open = true }, shape = RoundedCornerShape(8.dp)) {
-                    MText("[ ${views[pager.currentPage].label} v ]", color = MaterialTheme.colorScheme.primary, weight = FontWeight.Bold)
-                }
-                DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-                    views.forEachIndexed { i, v ->
-                        DropdownMenuItem(
-                            text = { MText(v.label, color = MaterialTheme.colorScheme.onSurface) },
-                            onClick = { open = false; scope.launch { pager.animateScrollToPage(i) } },
+            // Condensed Telemetry & Detection Rarity/Threat Strip
+            DejaCard {
+                Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        MText(
+                            "SEEN $totalNetworks",
+                            color = MaterialTheme.colorScheme.primary, size = 10.5.sp, weight = FontWeight.Bold,
+                            modifier = Modifier.clickable { scope.launch { pager.animateScrollToPage(views.indexOf(LiveView.VENDORS)) } },
                         )
+                        MText("NEW $newNetworks", color = Phosphor.cyan, size = 10.5.sp, weight = FontWeight.Bold)
+                        MText("WATCHED ${watchedTracks.size}", color = Phosphor.amber, size = 10.5.sp, weight = FontWeight.Bold)
+                        MText(
+                            "AP/m $currentApDensity (PK $peakDensity)",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, size = 10.sp,
+                            modifier = Modifier.clickable {
+                                activitySubView = ActivitySubView.DENSITY
+                                scope.launch { pager.animateScrollToPage(views.indexOf(LiveView.ACTIVITY)) }
+                            },
+                        )
+                    }
+                    if (activeAll.isNotEmpty()) {
+                        Row(
+                            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            DetectionCategory.entries.forEach { cat ->
+                                val c = categoryCounts[cat] ?: 0
+                                if (c > 0) {
+                                    CategoryPill(cat, c) {
+                                        signalFilter = when (cat) {
+                                            DetectionCategory.ATTACKER, DetectionCategory.WEP -> SignalFilter.ALERTS
+                                            DetectionCategory.RARE, DetectionCategory.UNCOMMON -> SignalFilter.RARE
+                                            DetectionCategory.RANDOMIZED -> SignalFilter.RAND
+                                            DetectionCategory.NORMAL -> SignalFilter.ALL
+                                        }
+                                        scope.launch { pager.animateScrollToPage(views.indexOf(LiveView.SIGNALS)) }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
-            Spacer(Modifier.weight(1f))
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                views.forEachIndexed { i, _ ->
+
+            // Clean 4-compartment segmented view bar
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(Phosphor.bg, RoundedCornerShape(8.dp))
+                    .border(1.dp, Phosphor.edge, RoundedCornerShape(8.dp))
+                    .padding(3.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                views.forEachIndexed { i, v ->
+                    val sel = pager.currentPage == i
                     Box(
                         Modifier
-                            .size(16.dp)
-                            .clickable { scope.launch { pager.animateScrollToPage(i) } },
+                            .weight(1f)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (sel) Phosphor.green else Color.Transparent)
+                            .clickable { scope.launch { pager.animateScrollToPage(i) } }
+                            .padding(vertical = 5.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Box(
-                            Modifier.size(if (i == pager.currentPage) 8.dp else 6.dp).background(
-                                if (i == pager.currentPage) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-                                CircleShape,
-                            )
-                        )
-                    }
-                }
-            }
-            MText(
-                "  ${tracks.size} in range", color = MaterialTheme.colorScheme.onSurfaceVariant, size = 11.sp,
-            )
-        }
-    }
-    val screen: @Composable (Modifier) -> Unit = { m ->
-        TerminalScreen(m) {
-            HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
-                when (views[page]) {
-                    LiveView.RADAR -> RadarPanel(tracks, running, now, vm.selectedMac, { vm.select(it) }, Modifier.fillMaxSize())
-                    LiveView.BARS -> BarsPanel(tracks, vm.selectedMac, { vm.select(it) }, Modifier.fillMaxSize())
-                    LiveView.HISTORY -> HistoryPanel(tracks, vm.selectedMac, now, { vm.select(it) }, Modifier.fillMaxSize())
-                    LiveView.SPECTRUM -> SpectrumPanel(
-                        all = all.values.toList(),
-                        watched = tracks,
-                        wifiCapabilities = vm.wifiCapabilities,
-                        selectedMac = vm.selectedMac,
-                        onSelect = { vm.select(it) },
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                    LiveView.DENSITY -> DensityPanel(densityPoints, running, Modifier.fillMaxSize())
-                    LiveView.VENDORS -> VendorsPanel(all.values, vm.selectedMac, { vm.select(it) }, Modifier.fillMaxSize())
-                }
-            }
-        }
-    }
-    // start/stop stays pinned; everything else lives in the scrolling info panel
-    val pinned: @Composable () -> Unit = {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(
-                    onClick = { onToggleScan(!running) },
-                    modifier = Modifier.weight(1f).height(48.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = if (running) ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer,
-                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                    ) else ButtonDefaults.buttonColors(),
-                ) {
-                    MText(
-                        if (running) "STOP WATCHING" else "START WATCHING",
-                        color = LocalContentColor.current,
-                        weight = FontWeight.Bold,
-                        letterSpacing = 2.sp,
-                        size = 13.sp,
-                    )
-                }
-                OutlinedButton(
-                    onClick = onRequestBackground,
-                    modifier = Modifier.height(48.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                    border = BorderStroke(
-                        1.dp,
-                        if (hasBackgroundPermission) Phosphor.edge else Phosphor.amber.copy(alpha = 0.7f),
-                    ),
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Box(
-                            Modifier.size(8.dp).background(
-                                if (hasBackgroundPermission) Phosphor.green else Phosphor.amber,
-                                CircleShape,
-                            )
-                        )
                         MText(
-                            if (hasBackgroundPermission) "BG ON" else "BG OFF",
-                            color = if (hasBackgroundPermission) Phosphor.text else Phosphor.amber,
+                            v.label,
+                            color = if (sel) Phosphor.bg else Phosphor.sub,
                             size = 10.sp,
                             weight = FontWeight.Bold,
                         )
                     }
                 }
             }
-            if (message.isNotEmpty()) {
-                MText(message, color = MaterialTheme.colorScheme.error, size = 12.sp)
+        }
+    }
+
+    val radarItems = if (radarShowAll) activeAll else watchedTracks
+    val screen: @Composable (Modifier) -> Unit = { m ->
+        TerminalScreen(m) {
+            HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
+                when (views[page]) {
+                    LiveView.RADAR -> RadarPanel(
+                        tracks = radarItems,
+                        classifications = classifications,
+                        running = running,
+                        now = now,
+                        selected = vm.selectedMac,
+                        showAllNearby = radarShowAll,
+                        onToggleShowAll = { radarShowAll = it },
+                        onSelect = { vm.select(it) },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    LiveView.SIGNALS -> SignalsPanel(
+                        allActive = activeAll,
+                        classifications = classifications,
+                        selected = vm.selectedMac,
+                        filter = signalFilter,
+                        onFilterChange = { signalFilter = it },
+                        onSelect = { vm.select(it) },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    LiveView.ACTIVITY -> ActivityPanel(
+                        vm = vm,
+                        allSightings = all,
+                        tracks = if (watchedTracks.isNotEmpty()) watchedTracks else activeAll.take(6),
+                        densityPoints = densityPoints,
+                        running = running,
+                        selected = vm.selectedMac,
+                        now = now,
+                        subView = activitySubView,
+                        onSubViewChange = { activitySubView = it },
+                        onSelect = { vm.select(it) },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    LiveView.VENDORS -> VendorsPanel(
+                        sightings = activeAll,
+                        classifications = classifications,
+                        selectedMac = vm.selectedMac,
+                        onSelect = { vm.select(it) },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         }
     }
-    val details: @Composable (Modifier) -> Unit = { m ->
-        val mac = vm.selectedMac
-        if (mac != null) {
-            DeviceDetails(vm, mac, showMapTab = false, m)
-        } else {
-            val btCount = totalNetworks - wifiAps
-            val wifiSightings = remember(all) { all.values.filter { it.type == "W" } }
-            val wpa3Count = remember(wifiSightings) {
-                wifiSightings.count { it.securitySuite == SecuritySuite.WPA3 || it.securitySuite == SecuritySuite.WPA3_ENTERPRISE || it.securitySuite == SecuritySuite.WPA2_WPA3 }
+
+    val legendStrip: @Composable () -> Unit = {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            DetectionCategory.entries.forEach { cat ->
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Box(Modifier.size(6.dp).background(Phosphor.forCategory(cat), CircleShape))
+                    MText(cat.shortTag, color = MaterialTheme.colorScheme.onSurfaceVariant, size = 8.5.sp)
+                }
             }
-            val wpa2Count = remember(wifiSightings) {
-                wifiSightings.count { it.securitySuite == SecuritySuite.WPA2 || it.securitySuite == SecuritySuite.WPA2_ENTERPRISE }
-            }
-            val wpaCount = remember(wifiSightings) {
-                wifiSightings.count { it.securitySuite == SecuritySuite.WPA || it.securitySuite == SecuritySuite.WPA_ENTERPRISE }
-            }
-            val wepCount = remember(wifiSightings) {
-                wifiSightings.count { it.securitySuite == SecuritySuite.WEP }
-            }
-            val openCount = remember(wifiSightings) {
-                wifiSightings.count { it.securitySuite == SecuritySuite.OPEN || it.securitySuite == SecuritySuite.OWE }
-            }
-            val secSummary = buildString {
-                val parts = mutableListOf<String>()
-                if (wpa3Count > 0) parts += "WPA3: $wpa3Count"
-                if (wpa2Count > 0) parts += "WPA2: $wpa2Count"
-                if (wpaCount > 0) parts += "WPA: $wpaCount"
-                if (wepCount > 0) parts += "WEP: $wepCount (!)"
-                if (openCount > 0) parts += "OPEN: $openCount (!)"
-                if (parts.isNotEmpty()) append(parts.joinToString("  |  "))
-                else if (wifiAps > 0) append("gathering beacons...")
-                else append("no APs heard yet")
-            }
-            val lines = listOf(
-                if (running) "> SCANNING ACTIVE: $currentApDensity APs/min" else "> SCANNER IDLE: press START WATCHING",
-                "TOTAL NETWORKS FOUND : $totalNetworks" + if (btCount > 0) " ($wifiAps Wi-Fi, $btCount BT)" else "",
-                "NEW TO LOCAL DATABASE: $newNetworks" + if (wifiAps > 0) " ($newWifiAps new APs)" else "",
-                "KNOWN IN LOCAL DB    : ${totalNetworks - newNetworks}",
-                if (running) "AP DENSITY (NOW)     : $currentApDensity APs/min (Peak: $peakDensity)" else "AP DENSITY (PEAK)    : $peakDensity APs/min",
-                "SECURITY SUITES (AP) : $secSummary",
-                "DEVICE PRIVILEGES    : " + if (vm.isRooted) "ROOT (superuser)" else "NON-ROOT (standard user)",
-                if (openCount > 0 || wepCount > 0) "> INSECURE APs FOUND : $openCount open (unencrypted), $wepCount WEP" else "> all heard APs use WPA2/WPA3 encryption",
-                "> Note on ESS        : ESS indicates multi-AP infrastructure, not security",
-                "> select DENSITY view above for rolling graph",
-                "> tap a blip or bar above for device details",
-            )
-            InfoPlaceholder(lines, m)
         }
     }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val landscape = maxWidth > maxHeight
-        val isVendors = views.getOrNull(pager.currentPage) == LiveView.VENDORS
-        val hasSelection = vm.selectedMac != null
+        val mac = vm.selectedMac
 
         if (landscape) {
-            Row(Modifier.fillMaxSize().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Row(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Column(
-                    Modifier.weight(if (isVendors && !hasSelection) 1.25f else 1f).fillMaxHeight().padding(vertical = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    Modifier.weight(if (mac != null) 1.05f else 1f).fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    header()
-                    countersBar()
-                    securityBanner()
-                    viewBar()
+                    topControls()
                     screen(Modifier.weight(1f).fillMaxWidth())
+                    if (mac == null) legendStrip()
                 }
-                Column(
-                    Modifier.weight(if (isVendors && !hasSelection) 0.75f else 1f).fillMaxHeight().padding(vertical = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    pinned()
-                    details(Modifier.weight(1f).fillMaxWidth())
+                if (mac != null) {
+                    DeviceDetails(vm, mac, showMapTab = false, Modifier.weight(0.95f).fillMaxHeight())
                 }
             }
         } else {
-            val side = minOf(maxWidth - 32.dp, maxHeight * 0.36f).coerceAtLeast(160.dp)
             Column(
-                Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Spacer(Modifier.height(2.dp))
-                header()
-                countersBar()
-                securityBanner()
-                viewBar()
-
-                if (isVendors && !hasSelection) {
-                    screen(Modifier.weight(1f).fillMaxWidth())
-                    pinned()
-                } else if (isVendors) {
-                    screen(Modifier.weight(0.52f).fillMaxWidth())
-                    pinned()
-                    details(Modifier.weight(0.48f).fillMaxWidth())
+                topControls()
+                if (mac != null) {
+                    screen(Modifier.weight(0.50f).fillMaxWidth())
+                    DeviceDetails(vm, mac, showMapTab = false, Modifier.weight(0.50f).fillMaxWidth())
                 } else {
-                    screen(Modifier.fillMaxWidth().height(side))
-                    pinned()
-                    details(Modifier.weight(1f).fillMaxWidth())
+                    screen(Modifier.weight(1f).fillMaxWidth())
+                    legendStrip()
                 }
-                Spacer(Modifier.height(2.dp))
             }
         }
     }
+}
+
+private fun countByCategory(
+    items: List<Sighting>,
+    classifications: Map<String, Classification>,
+): Map<DetectionCategory, Int> {
+    val map = HashMap<DetectionCategory, Int>()
+    for (s in items) {
+        val cat = classifications[s.mac]?.category ?: DetectionCategory.NORMAL
+        map[cat] = (map[cat] ?: 0) + 1
+    }
+    return map
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -712,172 +572,341 @@ private fun LiveScreen(
 private fun DevicesScreen(vm: AppViewModel, onPickFile: () -> Unit) {
     val deja = LocalDejaColors.current
     val sightings by SightingBus.sightings.collectAsState()
+    val ready by Vendors.ready.collectAsState()
     val newFindings = remember(sightings) { sightings.values.count { !it.inDatabase } }
+
+    var watchExpanded by rememberSaveable { mutableStateOf(false) }
+    var syncExpanded by rememberSaveable { mutableStateOf(false) }
+    var catFilter by rememberSaveable { mutableStateOf<DetectionCategory?>(null) }
+    var pickDate by remember { mutableStateOf(false) }
+    val day = vm.dayEpoch
+
+    if (pickDate) {
+        val state = rememberDatePickerState(initialSelectedDateMillis = day?.let { it * 86_400_000L })
+        DatePickerDialog(
+            onDismissRequest = { pickDate = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    state.selectedDateMillis?.let { vm.setDay(Math.floorDiv(it, 86_400_000L)) }
+                    pickDate = false
+                }) { Text("OK") }
+            },
+            dismissButton = { TextButton(onClick = { pickDate = false }) { Text("Cancel") } },
+        ) { DatePicker(state = state) }
+    }
+
+    val baseShown = when {
+        day != null -> vm.dayDevices.filter {
+            vm.query.isBlank() || it.name.contains(vm.query.trim(), true) || it.mac.contains(vm.query.trim(), true)
+        }
+        else -> vm.devices
+    }
+
+    val shown = remember(baseShown, catFilter, sightings, ready, vm.total) {
+        if (catFilter == null) baseShown
+        else baseShown.filter { d ->
+            val cls = DetectionClassifier.classifyDevice(d, sightings[d.mac], hasDatabase = vm.total > 0)
+            cls.category == catFilter
+        }
+    }
+
     LazyColumn(
-        Modifier.fillMaxSize().padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        Modifier.fillMaxSize().padding(horizontal = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         item {
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(4.dp))
             Header("DEVICES", "${vm.total} stored", vm, if (vm.total > 0) deja.strong else deja.weak)
         }
+
+        // Collapsible Compartment 1: Watch & Notification Rules
         item {
             DejaCard {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("WiGLE import", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        if (vm.linkedName.isEmpty()) "No file linked" else "Linked: ${vm.linkedName}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall,
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(enabled = !vm.busy, onClick = onPickFile, shape = RoundedCornerShape(12.dp)) { Text("Link WiGLE file") }
-                        OutlinedButton(
-                            enabled = !vm.busy, onClick = { vm.refreshLinked(force = true) },
-                            shape = RoundedCornerShape(12.dp),
-                        ) { Text("Refresh") }
-                    }
-                    Button(
-                        enabled = !vm.busy && vm.linkedName.isNotEmpty(),
-                        onClick = { vm.mergeFindingsIntoLinked() },
-                        shape = RoundedCornerShape(12.dp),
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { watchExpanded = !watchExpanded },
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(if (newFindings > 0) "Merge findings into WiGLE file ($newFindings new)" else "Merge findings into WiGLE file")
-                    }
-                    OutlinedButton(onClick = { vm.clearSightings() }, shape = RoundedCornerShape(12.dp)) { Text("Clear my scan history") }
-                    if (vm.status.isNotEmpty()) {
-                        Text(vm.status, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            }
-        }
-        item {
-            DejaCard {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Watch", style = MaterialTheme.typography.titleSmall)
-                    val modes = listOf(WatchMode.PICKED to "Picked", WatchMode.ALL to "All", WatchMode.FILTERED to "Filtered")
-                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                        modes.forEachIndexed { i, (m, label) ->
-                            SegmentedButton(
-                                selected = vm.mode == m, onClick = { vm.changeMode(m) },
-                                shape = SegmentedButtonDefaults.itemShape(index = i, count = modes.size),
-                            ) { Text(label) }
+                        Column(Modifier.weight(1f)) {
+                            Text("Watch & Notification Rules", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                "Mode: ${vm.mode.name} • Background alerts: ${if (vm.notifyHits) "Quiet" else "Off"}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
                         }
+                        MText(if (watchExpanded) "▲" else "▼", color = MaterialTheme.colorScheme.primary, size = 12.sp)
                     }
-                    if (vm.mode == WatchMode.FILTERED) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            for (t in listOf("W", "B", "E")) {
-                                FilterChip(selected = t in vm.types, onClick = { vm.toggleType(t) }, label = { Text(typeLabel(t)) })
+                    if (watchExpanded) {
+                        val modes = listOf(WatchMode.PICKED to "Picked", WatchMode.ALL to "All", WatchMode.FILTERED to "Filtered")
+                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                            modes.forEachIndexed { i, (m, label) ->
+                                SegmentedButton(
+                                    selected = vm.mode == m, onClick = { vm.changeMode(m) },
+                                    shape = SegmentedButtonDefaults.itemShape(index = i, count = modes.size),
+                                ) { Text(label) }
                             }
                         }
-                        FilterChip(
-                            selected = vm.skipRandomised, onClick = { vm.changeSkipRandomised(!vm.skipRandomised) },
-                            label = { Text("Skip randomised addresses") },
-                        )
+                        if (vm.mode == WatchMode.FILTERED) {
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                for (t in listOf("W", "B", "E")) {
+                                    FilterChip(selected = t in vm.types, onClick = { vm.toggleType(t) }, label = { Text(typeLabel(t)) })
+                                }
+                                FilterChip(
+                                    selected = vm.skipRandomised,
+                                    onClick = { vm.changeSkipRandomised(!vm.skipRandomised) },
+                                    label = { Text("Skip randomized MACs") },
+                                )
+                            }
+                        }
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Background watched-device alerts", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    "Rate-limited silent summary only while app is backgrounded",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                            }
+                            Switch(checked = vm.notifyHits, onCheckedChange = { vm.changeNotifyHits(it) })
+                        }
                     }
                 }
             }
         }
+
+        // Collapsible Compartment 2: WiGLE Database Sync
         item {
-            OutlinedTextField(
-                value = vm.query, onValueChange = { vm.changeQuery(it) },
-                label = { Text("Search name or address") }, singleLine = true,
-                shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        item {
-            var pick by remember { mutableStateOf(false) }
-            val day = vm.dayEpoch
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = { pick = true }, shape = RoundedCornerShape(12.dp)) {
-                    Text(if (day == null) "Search by date" else java.time.LocalDate.ofEpochDay(day).toString())
+            DejaCard {
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth().clickable { syncExpanded = !syncExpanded },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("WiGLE Database Sync", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                if (vm.linkedName.isEmpty()) "No .sqlite file linked"
+                                else "Linked: ${vm.linkedName}" + if (newFindings > 0) " ($newFindings new)" else "",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        MText(if (syncExpanded) "▲" else "▼", color = MaterialTheme.colorScheme.primary, size = 12.sp)
+                    }
+                    if (syncExpanded) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(enabled = !vm.busy, onClick = onPickFile, shape = RoundedCornerShape(10.dp)) { Text("Link WiGLE") }
+                            OutlinedButton(enabled = !vm.busy, onClick = { vm.refreshLinked(force = true) }, shape = RoundedCornerShape(10.dp)) {
+                                Text("Refresh")
+                            }
+                            OutlinedButton(onClick = { vm.clearSightings() }, shape = RoundedCornerShape(10.dp)) {
+                                Text("Clear scans")
+                            }
+                        }
+                        Button(
+                            enabled = !vm.busy && vm.linkedName.isNotEmpty(),
+                            onClick = { vm.mergeFindingsIntoLinked() },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(if (newFindings > 0) "Merge findings into WiGLE ($newFindings new)" else "Merge findings into WiGLE")
+                        }
+                        if (vm.status.isNotEmpty()) {
+                            Text(vm.status, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
-                if (day != null) OutlinedButton(onClick = { vm.setDay(null) }, shape = RoundedCornerShape(12.dp)) { Text("Clear date") }
-            }
-            if (pick) {
-                val state = rememberDatePickerState(initialSelectedDateMillis = day?.let { it * 86_400_000L })
-                DatePickerDialog(
-                    onDismissRequest = { pick = false },
-                    confirmButton = {
-                        TextButton(onClick = {
-                            state.selectedDateMillis?.let { vm.setDay(Math.floorDiv(it, 86_400_000L)) }
-                            pick = false
-                        }) { Text("OK") }
-                    },
-                    dismissButton = { TextButton(onClick = { pick = false }) { Text("Cancel") } },
-                ) { DatePicker(state = state) }
             }
         }
-        val day = vm.dayEpoch
+
+        // Collapsible Compartment 3: Root / Promiscuous Mode
+        item {
+            RootPromiscuousCard(vm)
+        }
+
+        // Search & Filter Bar
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedTextField(
+                    value = vm.query,
+                    onValueChange = { vm.changeQuery(it) },
+                    label = { Text("Search SSID, name, or MAC") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FilterChip(
+                        selected = day != null,
+                        onClick = { pickDate = true },
+                        label = { Text(if (day == null) "By Date" else java.time.LocalDate.ofEpochDay(day).toString()) },
+                    )
+                    if (day != null) {
+                        TextButton(onClick = { vm.setDay(null) }) { Text("Clear") }
+                    }
+                    DetectionCategory.entries.forEach { cat ->
+                        val active = catFilter == cat
+                        val col = Phosphor.forCategory(cat)
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (active) col.copy(alpha = 0.22f) else Color.Transparent)
+                                .border(1.dp, if (active) col else MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+                                .clickable { catFilter = if (active) null else cat }
+                                .padding(horizontal = 9.dp, vertical = 6.dp),
+                        ) {
+                            MText(
+                                cat.shortTag,
+                                color = if (active) col else MaterialTheme.colorScheme.onSurfaceVariant,
+                                size = 10.sp,
+                                weight = FontWeight.Bold,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (vm.selectedMac != null) {
+            item {
+                DeviceDetails(vm, vm.selectedMac!!, showMapTab = true, Modifier.fillMaxWidth().height(320.dp))
+            }
+        }
+
         if (day != null) {
             item {
                 DejaCard {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
                             if (vm.dayBusy) "Looking up ${java.time.LocalDate.ofEpochDay(day)}..."
                             else "${vm.dayTotal} devices seen on ${java.time.LocalDate.ofEpochDay(day)} (${vm.dayPoints.size} places)",
                             style = MaterialTheme.typography.titleSmall,
                         )
-                        if (vm.dayPoints.isNotEmpty()) DayMap(vm.mapFiles, vm.dayPoints, Modifier.fillMaxWidth().height(280.dp))
-                        Text(
-                            "Sources: WiGLE observations and last-seen dates, plus this app's own scans. Blue Wi-Fi, pink Bluetooth, orange BLE, grey unknown to WiGLE.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall,
-                        )
+                        if (vm.dayPoints.isNotEmpty()) DayMap(vm.mapFiles, vm.dayPoints, Modifier.fillMaxWidth().height(220.dp))
                     }
                 }
             }
         }
-        val shown = when {
-            day != null -> vm.dayDevices.filter {
-                vm.query.isBlank() || it.name.contains(vm.query.trim(), true) || it.mac.contains(vm.query.trim(), true)
-            }
-            vm.query.isNotBlank() -> vm.devices
-            else -> emptyList()
-        }
-        if (day == null && vm.query.isBlank()) {
+
+        if (day == null && vm.query.isBlank() && shown.isEmpty()) {
             item {
                 Text(
-                    "Type a name or address, or pick a date, to list devices.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall,
+                    if (catFilter != null) "No watched devices match ${catFilter!!.label}. Type a search query to scan the full database."
+                    else "Starred devices appear here automatically, or search by SSID / MAC / date above.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
                 )
             }
         } else if (day != null && vm.dayTotal > vm.dayDevices.size) {
             item {
                 Text(
-                    "Showing the first ${vm.dayDevices.size} of ${vm.dayTotal}; the map shows all places.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall,
+                    "Showing first ${vm.dayDevices.size} of ${vm.dayTotal} devices.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
                 )
             }
         }
-        items(shown, key = { it.mac }) { d -> DeviceCard(d) { vm.toggleWatched(d) } }
-        item { Spacer(Modifier.height(8.dp)) }
+
+        items(shown, key = { it.mac }) { d ->
+            DeviceCard(
+                d = d,
+                liveSighting = sightings[d.mac],
+                hasDatabase = vm.total > 0,
+                selected = vm.selectedMac == d.mac,
+                onClick = { vm.select(if (vm.selectedMac == d.mac) null else d.mac) },
+                onToggleWatch = { vm.toggleWatched(d) },
+            )
+        }
+        item {
+            Text(
+                LEGAL_NOTICE_SHORT,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+            )
+        }
     }
 }
 
 @Composable
-private fun DeviceCard(d: Device, onToggle: () -> Unit) {
-    DejaCard {
-        Row(Modifier.padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            val ready by Vendors.ready.collectAsState()
-            val vendor = remember(d.mac, ready) { Vendors.forMac(d.mac) }
-            VendorBadge(vendor, 40.dp)
-            Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                Text(d.name.ifEmpty { "(no name)" }, style = MaterialTheme.typography.titleSmall, maxLines = 1)
-                Text(d.mac, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
-                if (vendor != null) Text(vendor, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+private fun DeviceCard(
+    d: Device,
+    liveSighting: Sighting?,
+    hasDatabase: Boolean,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onToggleWatch: () -> Unit,
+) {
+    val ready by Vendors.ready.collectAsState()
+    val vendor = remember(d.mac, ready) { Vendors.forMac(d.mac) }
+    val cls = remember(d, liveSighting, vendor, hasDatabase) {
+        DetectionClassifier.classifyDevice(d, liveSighting, hasDatabase = hasDatabase, vendor = vendor)
+    }
+    val catColor = Phosphor.forCategory(cls.category)
+    val channelLabel = remember(d, liveSighting) {
+        liveSighting?.channelSummary?.ifEmpty { null }
+            ?: if (d.type == "W" && d.freq > 0) ChannelWidthHelper.formatChannelWidth(d.freq, -1, compact = true) else null
+    }
+    val secSuite = remember(d, liveSighting) {
+        liveSighting?.securitySuite?.takeIf { it != SecuritySuite.UNKNOWN }
+            ?: if (d.type == "W" && d.caps.isNotEmpty()) WifiSecurity.parse(d.caps).suite.takeIf { it != SecuritySuite.UNKNOWN } else null
+    }
+
+    DejaCard(
+        modifier = Modifier.clickable { onClick() },
+        borderColor = if (selected) catColor else catColor.copy(alpha = if (cls.category.priority <= 2) 0.45f else 0.18f),
+    ) {
+        Row(
+            Modifier.padding(start = 10.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .width(4.dp)
+                    .height(44.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(catColor),
+            )
+            Spacer(Modifier.width(8.dp))
+            VendorBadge(vendor, 36.dp)
+            Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                Text(d.name.ifEmpty { "(hidden / unnamed)" }, style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                Text(
+                    if (vendor != null) "${d.mac} • $vendor" else d.mac,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                )
+                FlowRow(
+                    Modifier.padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Chip(cls.category.shortTag, catColor)
                     Chip(typeLabel(d.type), MaterialTheme.colorScheme.primary)
-                    val sec = SightingBus.sightings.collectAsState().value[d.mac]?.securitySuite
-                    if (sec != null && sec != SecuritySuite.UNKNOWN) {
-                        Chip(sec.shortLabel, if (sec.isInsecure) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary)
+                    if (!channelLabel.isNullOrEmpty()) {
+                        Chip(channelLabel, Phosphor.cyan)
                     }
-                    if (d.randomised) Chip("RANDOMISED", MaterialTheme.colorScheme.error)
+                    if (secSuite != null) {
+                        val secCol = when {
+                            secSuite == SecuritySuite.WEP -> Phosphor.orange
+                            secSuite.isInsecure -> Phosphor.amber
+                            else -> MaterialTheme.colorScheme.secondary
+                        }
+                        Chip(secSuite.shortLabel, secCol)
+                    }
                 }
             }
-            IconButton(onClick = onToggle) {
+            IconButton(onClick = onToggleWatch) {
                 DejaIcon(
                     if (d.watched) IconKind.STAR else IconKind.STAR_OUTLINE,
                     if (d.watched) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    iconSize = 28.dp,
+                    iconSize = 26.dp,
                 )
             }
         }

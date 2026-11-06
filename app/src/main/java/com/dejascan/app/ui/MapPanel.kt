@@ -25,10 +25,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -40,13 +41,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.launch
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -54,16 +53,19 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.dejascan.app.data.ObsRow
 import com.dejascan.app.data.SightPoint
+import com.dejascan.app.scan.ChannelWidthHelper
+import com.dejascan.app.scan.DetectionCategory
+import com.dejascan.app.scan.DetectionClassifier
 import com.dejascan.app.scan.PhoneFix
 import com.dejascan.app.scan.SightingBus
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
-import org.mapsforge.core.graphics.Cap
+import kotlinx.coroutines.launch
 import org.mapsforge.core.graphics.Canvas
+import org.mapsforge.core.graphics.Cap
 import org.mapsforge.core.graphics.FontFamily
 import org.mapsforge.core.graphics.FontStyle
-import org.mapsforge.core.graphics.Paint
 import org.mapsforge.core.graphics.Style
 import org.mapsforge.core.model.BoundingBox
 import org.mapsforge.core.model.LatLong
@@ -86,16 +88,12 @@ private const val CLUSTER_BELOW_ZOOM = 15
 private const val FAN_FROM_ZOOM = 15
 private const val LINKS_FROM_ZOOM = 12
 
-private fun wigleColor(type: String): Int = when (type) {
-    "W" -> 0xFF1565C0.toInt()
-    "B" -> 0xFFAD1457.toInt()
-    else -> 0xFFEF6C00.toInt()
-}
-
 /**
- * Draws one dot per device: devices heard recently (filled at the estimated position, hollow and fanned out
- * around the phone when only approximate) and WiGLE devices at their last known place (clustered when zoomed
- * out). The chosen device is ringed, with its estimate circle; optionally its past places are drawn too.
+ * Draws one dot per device color-coded by [DetectionCategory]:
+ * - Attacker (Crimson), Outdated WEP (Orange), Rare (Gold), Uncommon (Cyan), Randomized MAC (Purple), Normal (Green).
+ * - Live estimated positions are larger filled dots; live approximate positions are hollow dots fanned out around the phone;
+ *   WiGLE stored positions are compact filled dots (or numbered cluster bubbles when zoomed out).
+ * - Selecting a dot highlights it with a target ring and an on-map HUD tag displaying its name, category, and channel + width.
  */
 private class PointsLayer(private val dp: Float) : Layer() {
     @Volatile var live: List<MapDot> = emptyList()
@@ -109,7 +107,11 @@ private class PointsLayer(private val dp: Float) : Layer() {
     @Volatile var onCluster: (LatLong) -> Unit = {}
 
     private class Hit(val x: Double, val y: Double, val mac: String?, val lat: Double, val lon: Double)
-    private class Cell { var sx = 0.0; var sy = 0.0; var sLat = 0.0; var sLon = 0.0; var n = 0; var first: MapDot? = null }
+    private class Cell {
+        var sx = 0.0; var sy = 0.0; var sLat = 0.0; var sLon = 0.0; var n = 0
+        var first: MapDot? = null
+        var topCategory: DetectionCategory = DetectionCategory.NORMAL
+    }
 
     @Volatile private var hits: List<Hit> = emptyList()
     @Volatile private var mapSizeNow = 0L
@@ -123,7 +125,6 @@ private class PointsLayer(private val dp: Float) : Layer() {
         setDashPathEffect(floatArrayOf(1f, 10f * dp))
         setStrokeWidth(4.5f * dp)
     }
-    // white dots slightly bigger than the coloured ones, so the line stands out on any map colour
     private val dottedHalo = gf.createPaint().apply {
         setStyle(Style.STROKE)
         setStrokeCap(Cap.ROUND)
@@ -134,27 +135,83 @@ private class PointsLayer(private val dp: Float) : Layer() {
     private val label = gf.createPaint().apply {
         setStyle(Style.FILL)
         setColor(AColor.WHITE)
-        setTextSize(12f * dp)
+        setTextSize(11f * dp)
         setTypeface(FontFamily.MONOSPACE, FontStyle.BOLD)
     }
+    private val subLabel = gf.createPaint().apply {
+        setStyle(Style.FILL)
+        setColor(0xFFB8FFD6.toInt())
+        setTextSize(10f * dp)
+        setTypeface(FontFamily.MONOSPACE, FontStyle.NORMAL)
+    }
 
-    private fun dot(c: Canvas, x: Int, y: Int, r: Float, color: Int, hollow: Boolean) {
+    private fun dot(c: Canvas, x: Int, y: Int, r: Float, color: Int, hollow: Boolean, alertHalo: Boolean = false) {
         val rad = (r * dp).toInt()
-        fill.setColor(if (hollow) (color and 0x00FFFFFF) or 0x66000000 else color)
+        if (alertHalo) {
+            stroke.setStrokeWidth(2f * dp)
+            stroke.setColor(color)
+            c.drawCircle(x, y, rad + (4 * dp).toInt(), stroke)
+        }
+        fill.setColor(if (hollow) (color and 0x00FFFFFF) or 0x55000000 else color)
         c.drawCircle(x, y, rad, fill)
         stroke.setStrokeWidth((if (hollow) 2.5f else 1.5f) * dp)
         stroke.setColor(if (hollow) color else AColor.BLACK)
         c.drawCircle(x, y, rad, stroke)
-        if (hollow) { stroke.setStrokeWidth(1f * dp); stroke.setColor(AColor.BLACK); c.drawCircle(x, y, rad + (2 * dp).toInt(), stroke) }
+        if (hollow) {
+            stroke.setStrokeWidth(1f * dp)
+            stroke.setColor(AColor.BLACK)
+            c.drawCircle(x, y, rad + (2 * dp).toInt(), stroke)
+        }
     }
 
-    /** A numbered bubble standing for several devices. */
     private fun bubble(c: Canvas, x: Int, y: Int, n: Int, color: Int, hollow: Boolean) {
         val r = 11f + min(9f, log2(n.toFloat()) * 1.5f)
         dot(c, x, y, r, color, hollow)
         label.setColor(if (hollow) AColor.BLACK else AColor.WHITE)
-        val t = if (n < 1000) n.toString() else if (n < 100_000) "%.1fk".format(java.util.Locale.ROOT, n / 1000f) else "${n / 1000}k"
-        c.drawText(t, x - (t.length * 3.6f * dp).toInt(), y + (4 * dp).toInt(), label)
+        val t = when {
+            n < 1000 -> n.toString()
+            n < 100_000 -> "%.1fk".format(java.util.Locale.ROOT, n / 1000f)
+            else -> "${n / 1000}k"
+        }
+        c.drawText(t, x - (t.length * 3.4f * dp).toInt(), y + (4 * dp).toInt(), label)
+    }
+
+    private fun drawHudTag(c: Canvas, x: Int, y: Int, d: MapDot) {
+        val namePart = d.device.name.ifEmpty { d.mac }.take(18)
+        val catTag = if (d.category != DetectionCategory.NORMAL) " [${d.category.shortTag}]" else ""
+        val line1 = "$namePart$catTag"
+        val line2 = buildString {
+            if (d.channelInfo.isNotEmpty()) append(d.channelInfo)
+            if (d.live) {
+                if (isNotEmpty()) append(" • ")
+                append("${d.rssi} dBm")
+            }
+        }
+        val chars = max(line1.length, line2.length)
+        val boxW = (chars * 6.8f * dp + 14f * dp).toInt()
+        val boxH = ((if (line2.isNotEmpty()) 30f else 18f) * dp).toInt()
+        val bx = max((6 * dp).toInt(), x - boxW / 2)
+        val by = max((8 * dp).toInt(), y - (18 * dp).toInt() - boxH)
+
+        val bg = gf.createPath().apply {
+            moveTo(bx.toFloat(), by.toFloat())
+            lineTo((bx + boxW).toFloat(), by.toFloat())
+            lineTo((bx + boxW).toFloat(), (by + boxH).toFloat())
+            lineTo(bx.toFloat(), (by + boxH).toFloat())
+            lineTo(bx.toFloat(), by.toFloat())
+        }
+        fill.setColor(0xE6040A06.toInt())
+        c.drawPath(bg, fill)
+        stroke.setStrokeWidth(1.5f * dp)
+        stroke.setColor(d.category.mapColorArgb)
+        c.drawPath(bg, stroke)
+
+        label.setColor(AColor.WHITE)
+        c.drawText(line1, bx + (7 * dp).toInt(), by + (13 * dp).toInt(), label)
+        if (line2.isNotEmpty()) {
+            subLabel.setColor(0xFF00E5FF.toInt())
+            c.drawText(line2, bx + (7 * dp).toInt(), by + (25 * dp).toInt(), subLabel)
+        }
     }
 
     override fun draw(box: BoundingBox, zoom: Byte, canvas: Canvas, top: Point, rotation: Rotation) {
@@ -167,7 +224,6 @@ private class PointsLayer(private val dp: Float) : Layer() {
         val out = ArrayList<Hit>()
         val sel = selected
 
-        // dotted lines joining the places one device was seen
         for (l in links) {
             val path = gf.createPath()
             for (i in l.lat.indices) {
@@ -178,8 +234,6 @@ private class PointsLayer(private val dp: Float) : Layer() {
             dotted.setColor(l.color)
             canvas.drawPath(path, dotted)
         }
-        // the places themselves: tap one to open the device; a chosen device gets numbered places
-        // (green = first seen, red = last seen)
         for (l in links) {
             for (i in l.lat.indices) {
                 val x = wx(l.lon[i]); val y = wy(l.lat[i])
@@ -188,7 +242,7 @@ private class PointsLayer(private val dp: Float) : Layer() {
                     dot(canvas, sx(x), sy(y), 11f, color, false)
                     label.setColor(AColor.WHITE)
                     val t = (i + 1).toString()
-                    canvas.drawText(t, sx(x) - (t.length * 3.6f * dp).toInt(), sy(y) + (4 * dp).toInt(), label)
+                    canvas.drawText(t, sx(x) - (t.length * 3.4f * dp).toInt(), sy(y) + (4 * dp).toInt(), label)
                 } else {
                     dot(canvas, sx(x), sy(y), 6f, l.color, false)
                 }
@@ -199,7 +253,7 @@ private class PointsLayer(private val dp: Float) : Layer() {
         for (o in trailObs) if (box.contains(o.lat, o.lon)) dot(canvas, sx(wx(o.lon)), sy(wy(o.lat)), 3.5f, 0xFF455A64.toInt(), true)
         for (p in trailOwn) if (box.contains(p.lat, p.lon)) dot(canvas, sx(wx(p.lon)), sy(wy(p.lat)), 3.5f, 0xFF37474F.toInt(), false)
 
-        // WiGLE devices: clusters (already counted by the database) and single dots
+        // WiGLE devices: clusters and color-coded single dots
         for (d in wigle) {
             if (d.count == 1 && d.mac == sel) continue
             val x = wx(d.lon); val y = wy(d.lat)
@@ -207,20 +261,18 @@ private class PointsLayer(private val dp: Float) : Layer() {
                 bubble(canvas, sx(x), sy(y), d.count, 0xFF37474F.toInt(), false)
                 out.add(Hit(x, y, null, d.lat, d.lon))
             } else {
-                dot(canvas, sx(x), sy(y), 5f, wigleColor(d.device.type), false)
+                val isAlert = d.category == DetectionCategory.ATTACKER || d.category == DetectionCategory.WEP
+                dot(canvas, sx(x), sy(y), 5f, d.category.mapColorArgb, false, alertHalo = isAlert)
                 out.add(Hit(x, y, d.mac, d.lat, d.lon))
             }
         }
 
-        // phone
         phone?.let { p ->
             val x = sx(wx(p.lon)); val y = sy(wy(p.lat))
             fill.setColor(AColor.WHITE); canvas.drawCircle(x, y, (9 * dp).toInt(), fill)
             stroke.setStrokeWidth(3.5f * dp); stroke.setColor(0xFF1E88E5.toInt()); canvas.drawCircle(x, y, (9 * dp).toInt(), stroke)
         }
 
-        // live devices: estimated ones are single dots (merged when close together at low zoom); the
-        // approximate ones share my position, so they are one numbered bubble until zoomed in far enough to fan out
         var selX = Double.NaN; var selY = Double.NaN; var selDot: MapDot? = null
         val exact = live.filter { !it.approx && box.contains(it.lat, it.lon) }
         if (zoom < CLUSTER_BELOW_ZOOM) {
@@ -232,15 +284,18 @@ private class PointsLayer(private val dp: Float) : Layer() {
                 val c = cells.getOrPut(floor(x / cell).toLong() * 1_000_003L + floor(y / cell).toLong()) { Cell() }
                 c.sx += x; c.sy += y; c.sLat += d.lat; c.sLon += d.lon; c.n++
                 if (c.first == null) c.first = d
+                if (d.category.priority < c.topCategory.priority) c.topCategory = d.category
             }
             for (c in cells.values) {
                 val x = c.sx / c.n; val y = c.sy / c.n
                 if (c.n == 1) {
                     val d = c.first!!
-                    dot(canvas, sx(x), sy(y), 7f, Phosphor.forRssi(d.rssi).toArgb(), false)
+                    val isAlert = d.category == DetectionCategory.ATTACKER || d.category == DetectionCategory.WEP
+                    dot(canvas, sx(x), sy(y), 7.5f, d.category.mapColorArgb, false, alertHalo = isAlert)
                     out.add(Hit(x, y, d.mac, d.lat, d.lon))
                 } else {
-                    bubble(canvas, sx(x), sy(y), c.n, 0xFF00796B.toInt(), false)
+                    val bCol = if (c.topCategory.priority <= 1) c.topCategory.mapColorArgb else 0xFF00796B.toInt()
+                    bubble(canvas, sx(x), sy(y), c.n, bCol, false)
                     out.add(Hit(x, y, null, c.sLat / c.n, c.sLon / c.n))
                 }
             }
@@ -248,7 +303,8 @@ private class PointsLayer(private val dp: Float) : Layer() {
         for (d in exact) {
             if (zoom >= CLUSTER_BELOW_ZOOM || d.mac == sel) {
                 val x = wx(d.lon); val y = wy(d.lat)
-                dot(canvas, sx(x), sy(y), 7f, Phosphor.forRssi(d.rssi).toArgb(), false)
+                val isAlert = d.category == DetectionCategory.ATTACKER || d.category == DetectionCategory.WEP
+                dot(canvas, sx(x), sy(y), 7.5f, d.category.mapColorArgb, false, alertHalo = isAlert)
                 out.add(Hit(x, y, d.mac, d.lat, d.lon))
                 if (d.mac == sel) { selX = x; selY = y; selDot = d }
             }
@@ -259,10 +315,14 @@ private class PointsLayer(private val dp: Float) : Layer() {
             if (zoom < FAN_FROM_ZOOM && g.none { it.mac == sel }) {
                 val x = wx(g[0].lon); val y = wy(g[0].lat)
                 if (g.size == 1) {
-                    dot(canvas, sx(x), sy(y), 6f, Phosphor.forRssi(g[0].rssi).toArgb(), true)
-                    out.add(Hit(x, y, g[0].mac, g[0].lat, g[0].lon))
+                    val d = g[0]
+                    val isAlert = d.category == DetectionCategory.ATTACKER || d.category == DetectionCategory.WEP
+                    dot(canvas, sx(x), sy(y), 6.5f, d.category.mapColorArgb, true, alertHalo = isAlert)
+                    out.add(Hit(x, y, d.mac, d.lat, d.lon))
                 } else {
-                    bubble(canvas, sx(x), sy(y), g.size, 0xFF00796B.toInt(), true)
+                    val topCat = g.minByOrNull { it.category.priority }?.category ?: DetectionCategory.NORMAL
+                    val bCol = if (topCat.priority <= 1) topCat.mapColorArgb else 0xFF00796B.toInt()
+                    bubble(canvas, sx(x), sy(y), g.size, bCol, true)
                     out.add(Hit(x, y, null, g[0].lat, g[0].lon))
                 }
                 continue
@@ -274,16 +334,16 @@ private class PointsLayer(private val dp: Float) : Layer() {
                     val a = i * 2.399963
                     x += r * kotlin.math.cos(a); y += r * kotlin.math.sin(a)
                 }
-                dot(canvas, sx(x), sy(y), 6f, Phosphor.forRssi(d.rssi).toArgb(), true)
+                val isAlert = d.category == DetectionCategory.ATTACKER || d.category == DetectionCategory.WEP
+                dot(canvas, sx(x), sy(y), 6.5f, d.category.mapColorArgb, true, alertHalo = isAlert)
                 out.add(Hit(x, y, d.mac, d.lat, d.lon))
                 if (d.mac == sel) { selX = x; selY = y; selDot = d }
             }
         }
-        // chosen device that is not live: draw it from the WiGLE list
         if (sel != null && selDot == null) {
             wigle.firstOrNull { it.mac == sel }?.let { d ->
                 selX = wx(d.lon); selY = wy(d.lat); selDot = d
-                dot(canvas, sx(selX), sy(selY), 6f, wigleColor(d.device.type), false)
+                dot(canvas, sx(selX), sy(selY), 6.5f, d.category.mapColorArgb, false)
                 out.add(Hit(selX, selY, d.mac, d.lat, d.lon))
             }
         }
@@ -296,8 +356,9 @@ private class PointsLayer(private val dp: Float) : Layer() {
             }
             stroke.setStrokeWidth(4f * dp); stroke.setColor(AColor.WHITE)
             canvas.drawCircle(sx(selX), sy(selY), (13 * dp).toInt(), stroke)
-            stroke.setStrokeWidth(2f * dp); stroke.setColor(0xFFD50000.toInt())
+            stroke.setStrokeWidth(2f * dp); stroke.setColor(d.category.mapColorArgb)
             canvas.drawCircle(sx(selX), sy(selY), (13 * dp).toInt(), stroke)
+            drawHudTag(canvas, sx(selX), sy(selY), d)
         }
         hits = out
     }
@@ -319,19 +380,32 @@ private class PointsLayer(private val dp: Float) : Layer() {
     }
 }
 
-/** Solid, opaque button so it stays readable on top of any map colours. */
 @Composable
 private fun MapButton(label: String, on: Boolean = false, onClick: () -> Unit) {
     Button(
         onClick = onClick,
         shape = RoundedCornerShape(6.dp),
         border = BorderStroke(1.dp, Phosphor.edge),
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 3.dp),
+        modifier = Modifier.height(32.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = if (on) Phosphor.green else Phosphor.bg,
+            containerColor = if (on) Phosphor.green else Phosphor.bg.copy(alpha = 0.92f),
             contentColor = if (on) Phosphor.bg else Phosphor.green,
         ),
-    ) { MText(label, color = if (on) Phosphor.bg else Phosphor.green, size = 11.sp, weight = FontWeight.Bold) }
+    ) { MText(label, color = if (on) Phosphor.bg else Phosphor.green, size = 10.5.sp, weight = FontWeight.Bold) }
+}
+
+@Composable
+private fun MiniToggle(label: String, on: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .background(if (on) Phosphor.dim else Phosphor.bg, RoundedCornerShape(5.dp))
+            .border(1.dp, if (on) Phosphor.green else Phosphor.grid, RoundedCornerShape(5.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 7.dp, vertical = 3.dp),
+    ) {
+        MText(label, color = if (on) Phosphor.green else Phosphor.sub, size = 9.5.sp, weight = if (on) FontWeight.Bold else FontWeight.Normal)
+    }
 }
 
 @Composable
@@ -353,11 +427,12 @@ fun MapTab(
     val dp = ctx.resources.displayMetrics.density
     val phone by SightingBus.phone.collectAsState()
     var showFiles by remember { mutableStateOf(false) }
+    var showLayers by rememberSaveable { mutableStateOf(false) }
     var showLive by rememberSaveable { mutableStateOf(true) }
     var showWigle by rememberSaveable { mutableStateOf(true) }
     var showOthers by rememberSaveable { mutableStateOf(true) }
     var showTrail by rememberSaveable { mutableStateOf(false) }
-    var showLegend by rememberSaveable { mutableStateOf(true) }
+    var showLegend by rememberSaveable { mutableStateOf(false) }
     var showLinks by rememberSaveable { mutableStateOf(false) }
     var showWifi by rememberSaveable { mutableStateOf(true) }
     var showBt by rememberSaveable { mutableStateOf(true) }
@@ -377,7 +452,6 @@ fun MapTab(
         mapView.setBuiltInZoomControls(true)
         mapView.setZoomLevelMin(3)
         mapView.setZoomLevelMax(20)
-        // keep every touch of a drag with the map, so no parent view steals the gesture halfway
         mapView.setOnTouchListener { v, e ->
             if (e.actionMasked == MotionEvent.ACTION_DOWN) v.parent?.requestDisallowInterceptTouchEvent(true)
             false
@@ -385,9 +459,8 @@ fun MapTab(
         mapView.layerManager.layers.add(points)
         val observer = Observer { viewTick.value = viewTick.value + 1 }
         mapView.model.mapViewPosition.addObserver(observer)
-        val lat = if (vm.mapCenterLat != 0.0 || vm.mapCenterLon != 0.0) vm.mapCenterLat else 0.0
         mapView.model.mapViewPosition.mapPosition =
-            MapPosition(LatLong(lat, vm.mapCenterLon), (if (vm.mapZoom > 0) vm.mapZoom else 2).toByte())
+            MapPosition(LatLong(vm.mapCenterLat, vm.mapCenterLon), (if (vm.mapZoom > 0) vm.mapZoom else 2).toByte())
         onDispose {
             mapView.model.mapViewPosition.removeObserver(observer)
             val mp = mapView.model.mapViewPosition.mapPosition
@@ -406,7 +479,6 @@ fun MapTab(
         mapView.model.mapViewPosition.mapPosition = MapPosition(ll, min(20, z + 2).toByte())
     }
 
-    // build the offline map from all stored files whenever the set changes
     LaunchedEffect(vm.mapFiles, vm.mapDetailZoom) {
         tiles.load(vm.mapFiles)?.let { vm.reportMapError(it) }
         if (vm.mapZoom == 0 && SightingBus.phone.value == null) {
@@ -414,7 +486,6 @@ fun MapTab(
         }
     }
 
-    // first start: my position if there is a fix, otherwise everything stored
     LaunchedEffect(phone != null, vm.dataVersion) {
         if (vm.mapZoom != 0) return@LaunchedEffect
         val p = phone
@@ -428,12 +499,10 @@ fun MapTab(
         }
     }
 
-    // live dots: refresh while the tab is open
     LaunchedEffect(showLive) {
         while (showLive) { vm.refreshLiveDots(); delay(5_000) }
     }
 
-    // WiGLE dots: reload whenever the view settles (or after an import)
     LaunchedEffect(vm.dataVersion, showWigle, showWifi, showBt, showBle, showLinks) { viewTick.value = viewTick.value + 1 }
     LaunchedEffect(Unit) {
         viewTick.collectLatest {
@@ -451,7 +520,6 @@ fun MapTab(
             val z = mp.zoomLevel.toInt()
             val s = lat(cy + hh); val n = lat(cy - hh); val w = lon(cx - hw); val e = lon(cx + hw)
             if (showLinks) {
-                // link view: only devices seen in several places, whatever the WIGLE button says
                 if (z >= LINKS_FROM_ZOOM) { vm.clearWigle(); vm.loadLinks(s, n, w, e, types) }
                 else { vm.clearLinks(); vm.loadWigle(s, n, w, e, z, types, linkedOnly = true) }
             } else {
@@ -463,23 +531,26 @@ fun MapTab(
 
     LaunchedEffect(mac, showTrail) { vm.loadTrail(if (showTrail) mac else null) }
 
-    // push the data into the drawing layer (the phone only counts when it moved about a metre)
     val phoneKey = phone?.let { (it.lat * 1e5).toLong() to (it.lon * 1e5).toLong() }
     LaunchedEffect(
         vm.liveDots, vm.wigleDots, showLive, showOthers, showWigle, mac, phoneKey, vm.trailObs, vm.trailOwn,
         showTrail, vm.linkPaths, showLinks, vm.linkMode, soloMode, vm.selectedPlaces, vm.selectedDevice,
     ) {
         if (soloMode && mac != null) {
-            // only the chosen device: its dot, and its places joined by a dotted line
             points.live = vm.liveDots.filter { it.mac == mac }
             val d = vm.selectedDevice?.takeIf { it.lat != 0.0 || it.lon != 0.0 }
-            points.wigle = if (points.live.isEmpty() && d != null) listOf(MapDot(d, false, false, 0, d.lat, d.lon, null)) else emptyList()
+            points.wigle = if (points.live.isEmpty() && d != null) {
+                val liveS = SightingBus.sightings.value[d.mac]
+                val cls = DetectionClassifier.classifyDevice(d, liveS, hasDatabase = vm.total > 0)
+                val ch = liveS?.channelSummary?.ifEmpty { null }
+                    ?: if (d.type == "W" && d.freq > 0) ChannelWidthHelper.formatChannelWidth(d.freq, -1, compact = true) else ""
+                listOf(MapDot(d, false, false, 0, d.lat, d.lon, null, category = cls.category, channelInfo = ch))
+            } else emptyList()
             val pl = vm.selectedPlaces
             points.links = if (pl.size >= 2) {
                 listOf(LinkPath(mac, 0xFF6A1B9A.toInt(), DoubleArray(pl.size) { pl[it].lat }, DoubleArray(pl.size) { pl[it].lon }, numbered = true))
             } else emptyList()
         } else {
-            // in the link view only devices seen in several places are shown: no live dots, no other WiGLE dots
             points.live = if (showLive && !showLinks) vm.liveDots.filter { showOthers || it.watched } else emptyList()
             points.wigle = if (showWigle || showLinks) vm.wigleDots else emptyList()
             points.links = if (showLinks) vm.linkPaths else emptyList()
@@ -491,7 +562,6 @@ fun MapTab(
         points.requestRedraw()
     }
 
-    // a chosen device (tapped here or on the Live tab): zoom so all the places it was seen are visible
     LaunchedEffect(mac, vm.selectedPlaces, vm.selectedDevice) {
         if (mac == null) return@LaunchedEffect
         val pts = ArrayList<LatLong>()
@@ -507,20 +577,19 @@ fun MapTab(
         AlertDialog(
             onDismissRequest = { showFiles = false },
             containerColor = Phosphor.bg,
-            title = { MText("MAP FILES", color = Phosphor.green, size = 14.sp, weight = FontWeight.Bold) },
+            title = { MText("OFFLINE MAPS", color = Phosphor.green, size = 14.sp, weight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     MText(
-                        "> all files below are combined into one map, so you can add one per country or region. Files over 100 MB are only drawn from the detail zoom below (to avoid running out of memory); a small overview file shows when zoomed out.",
+                        "> stored .map files are rendered together offline. Files over 100 MB draw from the detail zoom below.",
                         color = Phosphor.sub, size = 11.sp,
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        MText("detail from zoom", Modifier.weight(1f), color = Phosphor.text, size = 12.sp)
+                        MText("Detail zoom", Modifier.weight(1f), color = Phosphor.text, size = 12.sp)
                         MapButton("-") { vm.changeMapDetail(vm.mapDetailZoom - 1) }
                         MText("${vm.mapDetailZoom}", Modifier.padding(horizontal = 10.dp), color = Phosphor.green, size = 14.sp, weight = FontWeight.Bold)
                         MapButton("+") { vm.changeMapDetail(vm.mapDetailZoom + 1) }
                     }
-                    MText("> raise it if the map is slow or the app runs out of memory; lower it to see roads when zoomed out.", color = Phosphor.sub, size = 10.sp)
                     if (vm.mapFiles.isEmpty()) MText("> none loaded yet", color = Phosphor.amber, size = 11.sp)
                     vm.mapFiles.forEach { f ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -537,15 +606,15 @@ fun MapTab(
                     if (vm.mapStatus.isNotEmpty()) MText(vm.mapStatus, color = Phosphor.amber, size = 11.sp)
                 }
             },
-            confirmButton = { MapButton("ADD FILES", onClick = onPickMap) },
+            confirmButton = { MapButton("ADD .MAP", onClick = onPickMap) },
             dismissButton = { MapButton("CLOSE") { showFiles = false } },
         )
     }
 
     BoxWithConstraints(modifier.fillMaxSize()) {
         val landscape = maxWidth > maxHeight
-        val panelHeight = maxHeight * 0.52f
-        val emptyHeight = maxHeight * 0.3f
+        val panelHeight = maxHeight * 0.50f
+        val emptyHeight = maxHeight * 0.34f
         val safe = Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
         Box(Modifier.fillMaxSize().background(Phosphor.bg)) {
             AndroidView(factory = { mapView }, modifier = Modifier.fillMaxSize())
@@ -554,48 +623,73 @@ fun MapTab(
                 if (mac != null) {
                     DeviceDetails(vm, mac, showMapTab = true, m)
                 } else if (showLegend) {
-                    EmptyPanel(vm, showLive, showOthers, showWigle, { showLegend = false }, m)
+                    LegendPanel(vm, showOthers, { showLegend = false }, m)
                 }
             }
-            // landscape: the box opens below the buttons, in the same column; portrait: it sits at the bottom
+
+            // Condensed top-left compartment controls
             Column(
                 Modifier.align(Alignment.TopStart).then(safe).then(if (landscape) Modifier.fillMaxHeight() else Modifier)
-                    .padding(start = 6.dp, top = 6.dp, end = 76.dp, bottom = if (landscape) 6.dp else 0.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                    .padding(start = 6.dp, top = 6.dp, end = 72.dp, bottom = if (landscape) 6.dp else 0.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
             ) {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    MapButton("LIVE", showLive) { showLive = !showLive }
-                    MapButton("WIGLE", showWigle) { showWigle = !showWigle }
-                    MapButton("OTHERS", showOthers) { showOthers = !showOthers }
-                    MapButton("WI-FI", showWifi) { showWifi = !showWifi }
-                    MapButton("BT", showBt) { showBt = !showBt }
-                    MapButton("BLE", showBle) { showBle = !showBle }
-                    MapButton("TRAIL", showTrail) { showTrail = !showTrail }
-                    MapButton("LINKS", showLinks) { showLinks = !showLinks }
-                    MapButton("SOLO", soloMode) { soloMode = !soloMode }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    MapButton(if (showLayers) "LAYERS ▲" else "LAYERS ▼", showLayers) { showLayers = !showLayers }
+                    if (mac != null) {
+                        MapButton("SOLO", soloMode) { soloMode = !soloMode }
+                    }
                     MapButton("LEGEND", showLegend) { showLegend = !showLegend }
                 }
+
+                if (showLayers) {
+                    MapChip {
+                        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                                MText("SRC ", color = Phosphor.sub, size = 9.5.sp, weight = FontWeight.Bold)
+                                MiniToggle("LIVE", showLive) { showLive = !showLive }
+                                MiniToggle("WIGLE", showWigle) { showWigle = !showWigle }
+                                MiniToggle("UNWATCHED", showOthers) { showOthers = !showOthers }
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                                MText("TYPE", color = Phosphor.sub, size = 9.5.sp, weight = FontWeight.Bold)
+                                MiniToggle("WI-FI", showWifi) { showWifi = !showWifi }
+                                MiniToggle("BT", showBt) { showBt = !showBt }
+                                MiniToggle("BLE", showBle) { showBle = !showBle }
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
+                                MText("PATH", color = Phosphor.sub, size = 9.5.sp, weight = FontWeight.Bold)
+                                MiniToggle("SOLO", soloMode) { soloMode = !soloMode }
+                                MiniToggle("LINKS", showLinks) { showLinks = !showLinks }
+                                MiniToggle("TRAIL", showTrail) { showTrail = !showTrail }
+                            }
+                        }
+                    }
+                }
+
                 if (showLinks) {
                     MapChip {
                         MText(
-                            if (vm.linkError.isNotEmpty()) "> links failed: ${vm.linkError}"
-                            else if (vm.linkMode && vm.linkLoading) "> looking for devices seen in several places..."
-                            else if (vm.linkMode) "${vm.linkPaths.size} devices seen in several places in this view (others hidden)"
-                            else "${vm.wigleDots.sumOf { it.count }} devices seen in several places in view. Zoom in (12+) for the dotted lines",
-                            color = Phosphor.amber, size = 11.sp,
+                            when {
+                                vm.linkError.isNotEmpty() -> "> links error: ${vm.linkError}"
+                                vm.linkMode && vm.linkLoading -> "> loading multi-place links..."
+                                vm.linkMode -> "${vm.linkPaths.size} multi-place devices in view"
+                                else -> "${vm.wigleDots.sumOf { it.count }} multi-place devices (zoom 12+ for lines)"
+                            },
+                            color = Phosphor.amber, size = 10.5.sp,
                         )
                     }
                 }
                 if (vm.mapStatus.isNotEmpty()) {
-                    MapChip { MText(vm.mapStatus, color = Phosphor.amber, size = 11.sp) }
+                    MapChip { MText(vm.mapStatus, color = Phosphor.amber, size = 10.5.sp) }
                 }
                 if (landscape && (mac != null || showLegend)) {
-                    panel(Modifier.width(384.dp).weight(1f))
+                    panel(Modifier.width(380.dp).weight(1f))
                 }
             }
+
             Column(
                 Modifier.align(Alignment.TopEnd).then(safe).padding(6.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
                 horizontalAlignment = Alignment.End,
             ) {
                 MapButton("FIT") { fit() }
@@ -605,7 +699,7 @@ fun MapTab(
                 MapButton("MAPS") { showFiles = true }
             }
 
-            if (!landscape) {
+            if (!landscape && (mac != null || showLegend)) {
                 panel(
                     Modifier.align(Alignment.BottomCenter).fillMaxWidth()
                         .height(if (mac != null) panelHeight else emptyHeight).padding(8.dp),
@@ -615,8 +709,6 @@ fun MapTab(
     }
 }
 
-
-/** Zooms and centres the map so all the points are visible. */
 private fun fitPoints(mapView: MapView, ll: List<LatLong>) {
     if (ll.isEmpty()) return
     val bb = BoundingBox(ll)
@@ -628,7 +720,6 @@ private fun fitPoints(mapView: MapView, ll: List<LatLong>) {
     mapView.model.mapViewPosition.mapPosition = MapPosition(bb.centerPoint, z.toByte())
 }
 
-/** Fits the view to everything stored (plus live dots and the phone). */
 private suspend fun fitAll(vm: AppViewModel, mapView: MapView, phone: PhoneFix?, live: List<MapDot>) {
     val ll = ArrayList<LatLong>()
     vm.deviceBounds()?.let { b -> ll.add(LatLong(b[0], b[2])); ll.add(LatLong(b[1], b[3])) }
@@ -637,44 +728,40 @@ private suspend fun fitAll(vm: AppViewModel, mapView: MapView, phone: PhoneFix?,
     fitPoints(mapView, ll)
 }
 
-/** The box that is always there: legend and counts while no device is chosen. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun EmptyPanel(vm: AppViewModel, live: Boolean, others: Boolean, wigle: Boolean, onHide: () -> Unit, modifier: Modifier) {
-    val shape = RoundedCornerShape(14.dp)
+private fun LegendPanel(vm: AppViewModel, others: Boolean, onHide: () -> Unit, modifier: Modifier) {
+    val shape = RoundedCornerShape(12.dp)
     val scroll = rememberScrollState()
     Column(
-        modifier.fillMaxWidth().background(Phosphor.bg, shape).border(1.dp, Phosphor.edge, shape).padding(12.dp)
+        modifier.fillMaxWidth().background(Phosphor.bg.copy(alpha = 0.95f), shape).border(1.dp, Phosphor.edge, shape).padding(10.dp)
             .scrollbar(scroll).verticalScroll(scroll),
         verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            MText("> tap a dot for details", Modifier.weight(1f), color = Phosphor.green, size = 13.sp, weight = FontWeight.Bold)
+            MText(
+                "${vm.liveDots.count { others || it.watched }} live • ${vm.wigleDots.sumOf { it.count }} WiGLE in view",
+                Modifier.weight(1f), color = Phosphor.green, size = 11.5.sp, weight = FontWeight.Bold,
+            )
             Box(
-                Modifier.size(40.dp).border(2.dp, Phosphor.red, RoundedCornerShape(8.dp)).clickable { onHide() },
+                Modifier.size(30.dp).border(1.5.dp, Phosphor.red, RoundedCornerShape(6.dp)).clickable { onHide() },
                 contentAlignment = Alignment.Center,
-            ) { MText("X", color = Phosphor.red, size = 22.sp, weight = FontWeight.Bold) }
+            ) { MText("X", color = Phosphor.red, size = 15.sp, weight = FontWeight.Bold) }
         }
-        MText(
-            "${vm.liveDots.count { others || it.watched }} heard now   ${vm.wigleDots.sumOf { it.count }} WiGLE in view" +
-                if (vm.wigleDots.size >= 4000) " (capped: zoom in)" else "",
-            color = Phosphor.text, size = 11.sp,
-        )
-        MText("-- LEGEND --", color = Phosphor.green, size = 11.sp, weight = FontWeight.Bold)
-        MText("filled green  heard now, position estimated", color = Phosphor.text, size = 11.sp)
-        MText("hollow green  heard now, only near my position (approximate)", color = Phosphor.text, size = 11.sp)
-        MText("blue / pink / orange  WiGLE Wi-Fi / Bluetooth / BLE, last known place", color = Phosphor.text, size = 11.sp)
-        MText("numbered bubble  several devices, tap to zoom in (they spread out as you zoom)", color = Phosphor.text, size = 11.sp)
-        MText("white ring with blue edge  me", color = Phosphor.text, size = 11.sp)
-        MText("dotted line  one device seen in several places (LINKS, zoom 12+)", color = Phosphor.text, size = 11.sp)
-        MText("numbered places  chosen device: green 1 = first seen, red = last seen", color = Phosphor.text, size = 11.sp)
-        MText("-- BUTTONS --", color = Phosphor.green, size = 11.sp, weight = FontWeight.Bold)
-        MText(
-            "LIVE ${if (live) "on" else "off"}: devices heard now.  OTHERS ${if (others) "on" else "off"}: devices that are not on your watch list.  " +
-                "WIGLE ${if (wigle) "on" else "off"}: imported devices (WI-FI / BT / BLE pick the kinds).  TRAIL: past places of the chosen device.  LINKS: dotted lines between the places each device was seen.  SOLO: when a device is chosen, show only that device and its places.",
-            color = Phosphor.sub, size = 11.sp,
-        )
+        MText("-- DETECTION COLORS --", color = Phosphor.green, size = 10.sp, weight = FontWeight.Bold)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            DetectionCategory.entries.forEach { cat ->
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Box(Modifier.size(8.dp).background(Color(cat.uiColorHex), CircleShape))
+                    MText("${cat.shortTag}: ${cat.label}", color = Phosphor.text, size = 9.5.sp)
+                }
+            }
+        }
+        MText("-- DOT SHAPES & CHANNELS --", color = Phosphor.green, size = 10.sp, weight = FontWeight.Bold)
+        MText("• Large filled = live estimated  • Hollow = live near phone  • Small filled = WiGLE", color = Phosphor.sub, size = 9.5.sp)
+        MText("• Tap any dot to inspect its Wi-Fi channel + width (e.g. Ch 36 • 80MHz) & details.", color = Phosphor.sub, size = 9.5.sp)
         if (vm.mapFiles.isEmpty()) {
-            MText("> no offline map loaded: use MAPS to add one", color = Phosphor.amber, size = 11.sp)
+            MText("> no offline map loaded: tap MAPS to add a .map file", color = Phosphor.amber, size = 10.sp)
         }
     }
 }

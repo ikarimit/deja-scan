@@ -11,6 +11,8 @@ import java.io.File
  * and the `location` table of individual observations (bssid, lat, lon, time, level).
  */
 object WigleImporter {
+    const val QUERY_FULL = "SELECT bssid,ssid,type,lasttime,lastlat,lastlon,bestlat,bestlon,frequency,capabilities FROM network " +
+        "WHERE type IN ('W','B','E')"
     const val QUERY = "SELECT bssid,ssid,type,lasttime,lastlat,lastlon,bestlat,bestlon FROM network " +
         "WHERE type IN ('W','B','E')"
     const val OBS_QUERY = "SELECT bssid,time,lat,lon,level FROM location"
@@ -30,7 +32,13 @@ object WigleImporter {
         src.use { db ->
             var skipped = 0
             val devices = try {
-                db.rawQuery(QUERY, null).use { c ->
+                val cursor = try {
+                    db.rawQuery(QUERY_FULL, null)
+                } catch (_: SQLiteException) {
+                    db.rawQuery(QUERY, null)
+                }
+                cursor.use { c ->
+                    val hasExtended = c.columnCount >= 10
                     val rows = sequence {
                         while (c.moveToNext()) {
                             val mac = MacUtil.normalize(c.getString(0))
@@ -45,6 +53,8 @@ object WigleImporter {
                                     lat = best.first, lon = best.second,
                                     randomised = MacUtil.isRandomised(mac),
                                     watched = false,
+                                    freq = if (hasExtended && !c.isNull(8)) c.getInt(8) else 0,
+                                    caps = if (hasExtended && !c.isNull(9)) (c.getString(9) ?: "") else "",
                                 )
                             )
                         }

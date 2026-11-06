@@ -143,6 +143,17 @@ class WifiSpectrumTest {
         assertEquals("Ch 149 (5 GHz)", ChannelWidthHelper.channelWithBand(5745))
         assertEquals("Ch 1 (6 GHz)", ChannelWidthHelper.channelWithBand(5955))
         assertEquals("Ch 37 (6 GHz)", ChannelWidthHelper.channelWithBand(6135))
+
+        // Compact channel + width formatting used across Map, Signals, Vendors, and Devices tabs
+        assertEquals("Ch 6 • 20MHz", ChannelWidthHelper.formatChannelWidth(2437, ChannelWidthHelper.WIDTH_20MHZ, compact = true))
+        assertEquals("Ch 36 • 80MHz", ChannelWidthHelper.formatChannelWidth(5180, ChannelWidthHelper.WIDTH_80MHZ, compact = true))
+        assertEquals("Ch 1 (6G) • 320MHz", ChannelWidthHelper.formatChannelWidth(5955, ChannelWidthHelper.WIDTH_320MHZ, compact = true))
+        assertEquals("Ch 36 (5 GHz) • 80 MHz", ChannelWidthHelper.formatChannelWidth(5180, ChannelWidthHelper.WIDTH_80MHZ, compact = false))
+
+        // Stored WiGLE frequency without live channel width (-1)
+        assertEquals("Ch 11 (2.4G)", ChannelWidthHelper.formatChannelWidth(2462, -1, compact = true))
+        assertEquals("Ch 149 (5G)", ChannelWidthHelper.formatChannelWidth(5745, -1, compact = true))
+        assertEquals("Ch 149 (5 GHz)", ChannelWidthHelper.formatChannelWidth(5745, -1, compact = false))
     }
 
     @Test

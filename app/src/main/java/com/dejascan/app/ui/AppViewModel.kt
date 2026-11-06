@@ -8,28 +8,32 @@ import android.provider.OpenableColumns
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.compose.ui.graphics.toArgb
+import com.dejascan.app.data.DejaDb
 import com.dejascan.app.data.Device
 import com.dejascan.app.data.ObsRow
-import com.dejascan.app.data.SightPoint
-import com.dejascan.app.scan.SightingBus
-import kotlinx.coroutines.Job
-import com.dejascan.app.geo.CellGrid
-import com.dejascan.app.geo.Geo
-import com.dejascan.app.scan.MacUtil
-import com.dejascan.app.geo.Estimate
-import com.dejascan.app.geo.PositionEstimator
-import com.dejascan.app.geo.Sample
-import com.dejascan.app.data.DejaDb
 import com.dejascan.app.data.Prefs
+import com.dejascan.app.data.SightPoint
+import com.dejascan.app.data.Vendors
 import com.dejascan.app.data.WatchMode
 import com.dejascan.app.data.WigleImporter
 import com.dejascan.app.data.WigleMerger
+import com.dejascan.app.geo.CellGrid
+import com.dejascan.app.geo.Estimate
+import com.dejascan.app.geo.Geo
+import com.dejascan.app.geo.PositionEstimator
+import com.dejascan.app.geo.Sample
+import com.dejascan.app.scan.ChannelWidthHelper
+import com.dejascan.app.scan.DetectionClassifier
+import com.dejascan.app.scan.MacUtil
 import com.dejascan.app.scan.RootDetector
-import com.dejascan.app.scan.WifiCapabilities
+import com.dejascan.app.scan.ScanService
+import com.dejascan.app.scan.SightingBus
+import com.dejascan.app.scan.promiscuous.PromiscuousMonitor
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -38,11 +42,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val db = DejaDb(app)
     private val prefs = Prefs(app)
 
-    var wifiCapabilities by mutableStateOf(WifiCapabilities.detect(app)); private set
     var isRooted by mutableStateOf(RootDetector.isRooted); private set
+    var promiscuousEnabled by mutableStateOf(prefs.promiscuousEnabled); private set
+    var promiscuousIface by mutableStateOf(prefs.promiscuousIface); private set
+    var promiscuousDriverSwitch by mutableStateOf(prefs.promiscuousDriverSwitch); private set
     var mode by mutableStateOf(prefs.mode); private set
     var types by mutableStateOf(prefs.types); private set
     var skipRandomised by mutableStateOf(prefs.skipRandomised); private set
+    var notifyHits by mutableStateOf(prefs.notifyHits); private set
     var query by mutableStateOf(""); private set
     var devices by mutableStateOf<List<Device>>(emptyList()); private set
     var total by mutableStateOf(0); private set
@@ -88,14 +95,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         mapFiles = scanMaps()
-        viewModelScope.launch {
-            SightingBus.wifiCapabilities.collect { wifiCapabilities = it }
-        }
         viewModelScope.launch(Dispatchers.IO) {
             if (db.count() > 0 && (!db.cellsReady() || (db.obsCount() > 0 && !db.linkedReady()))) indexCells()
+            if (isRooted) PromiscuousMonitor().probeCapabilities()
         }
         refresh()
         refreshLinked(force = false)
+    }
+
+    fun changePromiscuousEnabled(enabled: Boolean) {
+        val next = enabled && isRooted
+        promiscuousEnabled = next
+        prefs.promiscuousEnabled = next
+        if (next) probePromiscuousCapabilities()
+        ScanService.syncPromiscuous(getApplication())
+    }
+
+    fun changePromiscuousIface(iface: String) {
+        promiscuousIface = iface
+        prefs.promiscuousIface = iface
+        ScanService.syncPromiscuous(getApplication())
+    }
+
+    fun changePromiscuousDriverSwitch(allow: Boolean) {
+        promiscuousDriverSwitch = allow
+        prefs.promiscuousDriverSwitch = allow
+        ScanService.syncPromiscuous(getApplication())
+    }
+
+    fun probePromiscuousCapabilities() {
+        viewModelScope.launch(Dispatchers.IO) {
+            isRooted = RootDetector.checkRoot()
+            PromiscuousMonitor().probeCapabilities()
+        }
     }
 
     fun cycleTheme() {
@@ -107,8 +139,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         selectedMac = mac
         if (mac == null) { selectedPlaces = emptyList(); selectedDevice = null; return }
         viewModelScope.launch(Dispatchers.IO) {
-            val dev = try { db.devices(listOf(mac)).firstOrNull() } catch (e: Exception) { null }
-            val places = try { collapsePlaces(db.placesOf(listOf(mac))[mac] ?: emptyList()) } catch (e: Exception) { emptyList() }
+            val dev = try { db.devices(listOf(mac)).firstOrNull() } catch (_: Exception) { null }
+            val places = try { collapsePlaces(db.placesOf(listOf(mac))[mac] ?: emptyList()) } catch (_: Exception) { emptyList() }
             withContext(Dispatchers.Main) {
                 if (selectedMac == mac) { selectedDevice = dev; selectedPlaces = places }
             }
@@ -125,7 +157,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         if (kept.size <= MAX_PLACES) return kept
-        // too many (a device that moves with me): keep the first and last and an even sample between
         return List(MAX_PLACES) { i -> kept[(i.toLong() * (kept.size - 1) / (MAX_PLACES - 1)).toInt()] }
     }
 
@@ -157,15 +188,44 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val now = System.currentTimeMillis()
             val phone = SightingBus.phone.value
             val dots = ArrayList<MapDot>()
-            val counts = try { db.sightCounts(now - LIVE_ESTIMATE_WINDOW_MS) } catch (e: Exception) { emptyMap() }
+            val counts = try { db.sightCounts(now - LIVE_ESTIMATE_WINDOW_MS) } catch (_: Exception) { emptyMap() }
+            val hasDb = total > 0
             val heard = SightingBus.sightings.value.values
                 .filter { now - it.time <= LIVE_MS }.sortedByDescending { it.rssi }.take(LIVE_DOT_LIMIT)
+            val fixedVendors = HashMap<String, Int>()
+            var fixedTotal = 0
             for (s in heard) {
-                val est = if ((counts[s.mac] ?: 0) >= 3) try { estimateCached(s.mac, now) } catch (e: Exception) { null } else null
-                val dev = Device(s.mac, s.name, s.type, s.wigleLastTime, s.lat, s.lon, s.randomised, false)
+                if (!s.randomised) {
+                    val v = Vendors.forMac(s.mac)
+                    if (!v.isNullOrBlank()) {
+                        fixedVendors[v] = (fixedVendors[v] ?: 0) + 1
+                        fixedTotal++
+                    }
+                }
+            }
+            for (s in heard) {
+                val est = if ((counts[s.mac] ?: 0) >= 3) try { estimateCached(s.mac, now) } catch (_: Exception) { null } else null
+                val vendor = Vendors.forMac(s.mac)
+                val cls = DetectionClassifier.classify(
+                    s = s,
+                    hasDatabase = hasDb,
+                    vendor = vendor,
+                    vendorPeerCount = if (vendor != null) (fixedVendors[vendor] ?: 0) else 0,
+                    totalFixedPeers = fixedTotal,
+                )
+                val rawCaps = s.adv.firstOrNull { it.startsWith("Raw Caps: ") }?.removePrefix("Raw Caps: ").orEmpty()
+                val dev = Device(s.mac, s.name, s.type, s.wigleLastTime, s.lat, s.lon, s.randomised, false, s.freq, rawCaps)
                 val dot = when {
-                    est != null -> MapDot(dev, true, false, s.rssi, est.lat, est.lon, est, s.watched)
-                    phone != null -> MapDot(dev, true, true, s.rssi, phone.lat, phone.lon, null, s.watched)
+                    est != null -> MapDot(
+                        device = dev, live = true, approx = false, rssi = s.rssi,
+                        lat = est.lat, lon = est.lon, estimate = est, watched = s.watched,
+                        category = cls.category, channelInfo = s.channelSummary,
+                    )
+                    phone != null -> MapDot(
+                        device = dev, live = true, approx = true, rssi = s.rssi,
+                        lat = phone.lat, lon = phone.lon, estimate = null, watched = s.watched,
+                        category = cls.category, channelInfo = s.channelSummary,
+                    )
                     else -> null
                 }
                 if (dot != null) dots.add(dot)
@@ -178,10 +238,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun loadWigle(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double, zoom: Int, types: Set<String>, linkedOnly: Boolean = false) {
         wigleJob?.cancel()
         wigleJob = viewModelScope.launch(Dispatchers.IO) {
+            val liveMap = SightingBus.sightings.value
+            val hasDb = total > 0
             val list = try {
                 if (zoom > CellGrid.BASE_Z && !linkedOnly) {
                     db.inBounds(minLat, maxLat, minLon, maxLon, types, WIGLE_DOT_LIMIT)
-                        .map { MapDot(it, false, false, 0, it.lat, it.lon, null) }
+                        .map { d ->
+                            val liveS = liveMap[d.mac]
+                            val cls = DetectionClassifier.classifyDevice(d, liveS, hasDatabase = hasDb)
+                            val chInfo = liveS?.channelSummary?.ifEmpty { null }
+                                ?: if (d.type == "W" && d.freq > 0) ChannelWidthHelper.formatChannelWidth(d.freq, -1, compact = true) else ""
+                            MapDot(
+                                device = d, live = false, approx = false, rssi = 0,
+                                lat = d.lat, lon = d.lon, estimate = null,
+                                category = cls.category, channelInfo = chInfo,
+                            )
+                        }
                 } else {
                     val z = zoom.coerceIn(CellGrid.MIN_Z, CellGrid.BASE_Z)
                     db.cellsInView(
@@ -190,20 +262,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         CellGrid.cell(CellGrid.ny(maxLat), z), CellGrid.cell(CellGrid.ny(minLat), z),
                         types, linkedOnly,
                     ).map { c ->
-                        val dev = Device(c.mac, "", c.type, 0L, c.lat, c.lon, false, false)
-                        MapDot(dev, false, false, 0, c.lat, c.lon, null, count = c.count)
+                        val rand = MacUtil.isRandomised(c.mac)
+                        val dev = Device(c.mac, "", c.type, 0L, c.lat, c.lon, rand, false)
+                        val cls = DetectionClassifier.classifyDevice(dev, liveMap[c.mac], hasDatabase = hasDb)
+                        MapDot(
+                            device = dev, live = false, approx = false, rssi = 0,
+                            lat = c.lat, lon = c.lon, estimate = null, count = c.count,
+                            category = cls.category,
+                        )
                     }
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 emptyList()
             }
             withContext(Dispatchers.Main) { wigleDots = list }
         }
     }
 
-    /** Dotted lines for every device in view that was seen in 2+ different places. */
     fun clearWigle() { wigleJob?.cancel(); if (wigleDots.isNotEmpty()) wigleDots = emptyList() }
 
+    /** Dotted lines for every device in view that was seen in 2+ different places. */
     fun loadLinks(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double, types: Set<String>) {
         linkMode = true
         linkLoading = true
@@ -248,7 +326,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val zone = java.time.ZoneId.systemDefault()
             val start = java.time.LocalDate.ofEpochDay(epochDay).atStartOfDay(zone).toInstant().toEpochMilli()
             val end = java.time.LocalDate.ofEpochDay(epochDay + 1).atStartOfDay(zone).toInstant().toEpochMilli()
-            val hits = try { db.hitsOnDay(start, end, DAY_HIT_LIMIT) } catch (e: Exception) { emptyList() }
+            val hits = try { db.hitsOnDay(start, end, DAY_HIT_LIMIT) } catch (_: Exception) { emptyList() }
             val macs = hits.map { it.mac }.distinct()
             val known = HashMap<String, Device>()
             for (chunk in macs.chunked(400)) db.devices(chunk).forEach { known[it.mac] = it }
@@ -266,7 +344,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Builds the pre-counted map cells (after an import, or the first time after an update). */
     private fun indexCells() {
         if (indexing) return
         indexing = true
@@ -288,7 +365,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Past places of one device: WiGLE observations and this app's own sightings. */
     fun loadTrail(mac: String?) {
         viewModelScope.launch(Dispatchers.IO) {
             val obs = if (mac == null) emptyList() else db.obsFor(mac, MAP_POINT_LIMIT)
@@ -297,7 +373,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Box around every stored device with a known place: minLat, maxLat, minLon, maxLon. */
     suspend fun deviceBounds(): DoubleArray? = withContext(Dispatchers.IO) { db.bounds() }
 
     suspend fun device(mac: String): Device? = withContext(Dispatchers.IO) { db.devices(listOf(mac)).firstOrNull() }
@@ -308,7 +383,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return PositionEstimator.estimate(pts.map { Sample(it.lat, it.lon, it.rssi) })
     }
 
-    /** Position estimate from the last 24 h of this app's own sightings. */
     suspend fun estimate(mac: String): Estimate? = withContext(Dispatchers.IO) { estimateBlocking(mac) }
 
     fun clearSightings() {
@@ -331,7 +405,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return if (base.endsWith(".map")) base else "$base.map"
     }
 
-    /** Copies the chosen Mapsforge .map files into app storage; several files are combined on the map. */
     fun importMapFiles(uris: List<Uri>) {
         if (uris.isEmpty()) return
         mapStatus = "Copying ${uris.size} map file(s)..."
@@ -373,8 +446,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.Main) { mapFiles = list; mapStatus = "Removed $name" }
         }
     }
+
     fun changeHaptic(v: Boolean) { haptic = v; prefs.haptic = v }
     fun changeBeep(v: Boolean) { beep = v; prefs.beep = v }
+    fun changeNotifyHits(v: Boolean) { notifyHits = v; prefs.notifyHits = v }
 
     fun changeMode(m: WatchMode) { mode = m; prefs.mode = m }
     fun changeSkipRandomised(v: Boolean) { skipRandomised = v; prefs.skipRandomised = v }
@@ -388,7 +463,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleWatched(d: Device) {
         viewModelScope.launch(Dispatchers.IO) {
             db.setWatched(d.mac, !d.watched)
-            val list = db.search(query)
+            val list = if (query.isBlank()) db.watched() else db.search(query)
             withContext(Dispatchers.Main) {
                 devices = list
                 dayDevices = dayDevices.map { if (it.mac == d.mac) it.copy(watched = !d.watched) else it }
@@ -398,13 +473,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refresh() {
         viewModelScope.launch(Dispatchers.IO) {
-            val list = db.search(query)
+            val list = if (query.isBlank()) db.watched() else db.search(query)
             val n = db.count()
             withContext(Dispatchers.Main) { devices = list; total = n }
         }
     }
 
-    /** Remember a WiGLE file (kept readable and writable across restarts) and import it. */
     fun linkFile(uri: Uri) {
         val resolver = getApplication<Application>().contentResolver
         try {
@@ -427,7 +501,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         refreshLinked(force = true)
     }
 
-    /** Merges live findings (sightings and recorded positions) into the linked WiGLE SQLite file. */
     fun mergeFindingsIntoLinked() {
         val raw = prefs.linkedUri
         if (raw.isEmpty()) {
@@ -482,6 +555,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 prefs.linkedModified = meta?.second ?: System.currentTimeMillis()
 
                 val newDevices = allSightings.map { s ->
+                    val rawCaps = s.adv.firstOrNull { it.startsWith("Raw Caps: ") }?.removePrefix("Raw Caps: ").orEmpty()
                     Device(
                         mac = s.mac,
                         name = if (s.name != s.mac) s.name else "",
@@ -491,6 +565,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         lon = s.lon,
                         randomised = s.randomised,
                         watched = s.watched,
+                        freq = s.freq,
+                        caps = rawCaps,
                     )
                 }
                 db.upsertBatch(newDevices.asSequence())
@@ -508,14 +584,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     SightingBus.markKnown(known)
                 }
 
-                msg = "Merged into ${prefs.linkedName}: ${res.newNetworks} new networks, ${res.updatedNetworks} updated, ${res.newLocations} locations added."
+                msg = "Merged into ${prefs.linkedName}: ${res.newNetworks} new, ${res.updatedNetworks} updated, ${res.newLocations} locations."
             } catch (e: Exception) {
                 msg = "Merge failed: ${e.message ?: e.javaClass.simpleName}"
             } finally {
                 cache.delete()
             }
             prefs.lastImport = msg
-            val list = db.search(query)
+            val list = if (query.isBlank()) db.watched() else db.search(query)
             val n = db.count()
             withContext(Dispatchers.Main) {
                 status = msg
@@ -527,7 +603,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Re-imports the linked file if its modified time changed (or always when [force]). */
     fun refreshLinked(force: Boolean) {
         val raw = prefs.linkedUri
         if (raw.isEmpty()) {
@@ -548,7 +623,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun importLinked(uri: Uri, modified: Long) = runImport("linked file") { cache ->
         val input = try {
             getApplication<Application>().contentResolver.openInputStream(uri)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         } ?: return@runImport WigleImporter.Result.Error("Cannot open the linked file. Link it again.")
         input.use { i -> cache.outputStream().use { o -> i.copyTo(o) } }
@@ -565,7 +640,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         )?.use { c ->
             if (c.moveToFirst()) (c.getString(0) ?: "") to (if (c.isNull(1)) 0L else c.getLong(1)) else null
         }
-    } catch (e: Exception) {
+    } catch (_: Exception) {
         null
     }
 
@@ -577,7 +652,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val cache = File(getApplication<Application>().cacheDir, "import.sqlite")
             val msg = try {
                 when (val r = work(cache)) {
-                    is WigleImporter.Result.Ok -> "Imported ${r.imported} devices and ${r.observations} observations from $label (${r.skipped} skipped)"
+                    is WigleImporter.Result.Ok -> "Imported ${r.imported} devices and ${r.observations} observations (${r.skipped} skipped)"
                     is WigleImporter.Result.Error -> r.message
                 }
             } catch (e: Exception) {
@@ -588,11 +663,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             prefs.lastImport = msg
             if (msg.startsWith("Imported")) {
                 withContext(Dispatchers.Main) { status = "Indexing devices for the map..." }
-                try { db.rebuildCells(); db.rebuildLinked() } catch (e: Exception) { /* the map falls back to an empty overview */ }
+                try { db.rebuildCells(); db.rebuildLinked() } catch (_: Exception) {}
                 val known = db.filterKnown(SightingBus.sightings.value.keys)
                 withContext(Dispatchers.Main) { SightingBus.markKnown(known) }
             }
-            val list = db.search(query)
+            val list = if (query.isBlank()) db.watched() else db.search(query)
             val n = db.count()
             withContext(Dispatchers.Main) { status = msg; devices = list; total = n; busy = false; dataVersion++ }
         }

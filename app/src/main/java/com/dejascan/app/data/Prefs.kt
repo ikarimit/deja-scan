@@ -47,10 +47,25 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("beep", true)
         set(v) = sp.edit().putBoolean("beep", v).apply()
 
+    var notifyHits: Boolean
+        get() = sp.getBoolean("notifyHits", true)
+        set(v) = sp.edit().putBoolean("notifyHits", v).apply()
 
     var lastImport: String
         get() = sp.getString("lastImport", "") ?: ""
         set(v) = sp.edit().putString("lastImport", v).apply()
+
+    var promiscuousEnabled: Boolean
+        get() = sp.getBoolean("promiscEnabled", false)
+        set(v) = sp.edit().putBoolean("promiscEnabled", v).apply()
+
+    var promiscuousIface: String
+        get() = sp.getString("promiscIface", "auto") ?: "auto"
+        set(v) = sp.edit().putString("promiscIface", v).apply()
+
+    var promiscuousDriverSwitch: Boolean
+        get() = sp.getBoolean("promiscDriverSwitch", false)
+        set(v) = sp.edit().putBoolean("promiscDriverSwitch", v).apply()
 
     fun filter() = WatchFilter(mode, types, skipRandomised)
 }

@@ -20,8 +20,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.dejascan.app.scan.DetectionCategory
 
-/** Fixed phosphor palette: the terminal screen looks the same in light and dark app themes. */
+/** Fixed phosphor palette and detection classification color scheme. */
 object Phosphor {
     val bg = Color(0xFF040A06)
     val green = Color(0xFF39FF88)
@@ -32,14 +33,22 @@ object Phosphor {
     val sub = Color(0xFF7FCBA0)
     val grid = Color(0xFF0F3320)
     val amber = Color(0xFFFFB000)
+    val orange = Color(0xFFFF6D00)
+    val gold = Color(0xFFFFD600)
     val text = Color(0xFFB8FFD6)
-    val cyan = Color(0xFF4DE1FF)
-    val magenta = Color(0xFFFF6BD6)
-    val red = Color(0xFFFF5C6C)
+    val cyan = Color(0xFF00E5FF)
+    val purple = Color(0xFFB388FF)
+    val red = Color(0xFFFF2A55)
 
-    val series = listOf(green, amber, cyan, magenta, text)
+    val series = listOf(green, cyan, gold, purple, orange, text)
 
-    fun forRssi(rssi: Int): Color = when (barsFor(rssi)) { 4, 3 -> green; 2 -> amber; else -> Color(0xFF4A8A68) }
+    fun forRssi(rssi: Int): Color = when {
+        rssi >= -67 -> green
+        rssi >= -78 -> amber
+        else -> Color(0xFF4A8A68)
+    }
+
+    fun forCategory(category: DetectionCategory): Color = Color(category.uiColorHex)
 }
 
 val Mono = FontFamily.Monospace

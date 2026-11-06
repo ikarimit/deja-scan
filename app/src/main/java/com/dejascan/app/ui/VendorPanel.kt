@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
@@ -35,6 +36,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.dejascan.app.data.Vendors
+import com.dejascan.app.scan.Classification
+import com.dejascan.app.scan.DetectionCategory
 import com.dejascan.app.scan.MacUtil
 import com.dejascan.app.scan.SecuritySuite
 import com.dejascan.app.scan.Sighting
@@ -98,7 +101,7 @@ fun groupSightingsByVendor(
             else -> Vendors.monogram(name)
         }
         val h = when {
-            isRand -> 285f
+            isRand -> 265f
             isUnk -> 35f
             else -> Vendors.hue(name)
         }
@@ -137,6 +140,7 @@ fun groupSightingsByVendor(
 @Composable
 fun VendorsPanel(
     sightings: Collection<Sighting>,
+    classifications: Map<String, Classification>,
     selectedMac: String?,
     onSelect: (String?) -> Unit,
     modifier: Modifier = Modifier,
@@ -144,8 +148,7 @@ fun VendorsPanel(
     val ready by Vendors.ready.collectAsState()
     var typeFilter by remember { mutableStateOf("ALL") }
     var query by remember { mutableStateOf("") }
-    var expandedVendors by remember { mutableStateOf(setOf<String>()) }
-    var collapsedVendors by remember { mutableStateOf(setOf<String>()) }
+    var toggledVendors by remember { mutableStateOf(setOf<String>()) }
 
     if (!ready) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -157,7 +160,7 @@ fun VendorsPanel(
     if (sightings.isEmpty()) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             MText(
-                "> NO DEVICES HEARD YET\n> START WATCHING TO ANALYZE VENDORS",
+                "> NO DEVICES HEARD YET\n> PRESS SCAN TO ANALYZE VENDORS",
                 color = Phosphor.dim, size = 12.sp, align = TextAlign.Center, modifier = Modifier.padding(20.dp),
             )
         }
@@ -178,21 +181,19 @@ fun VendorsPanel(
     }
 
     Column(modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        // Summary metrics
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             MText("VENDORS: $uniqueVendors", color = Phosphor.green, size = 10.sp, weight = FontWeight.Bold)
-            MText("KNOWN: ${totalCount - randomizedTotal - unknownTotal}", color = Phosphor.cyan, size = 10.sp)
-            MText("RANDOM: $randomizedTotal", color = Phosphor.magenta, size = 10.sp)
+            MText("FIXED: ${totalCount - randomizedTotal - unknownTotal}", color = Phosphor.cyan, size = 10.sp)
+            MText("RAND: $randomizedTotal", color = Phosphor.purple, size = 10.sp)
             if (unknownTotal > 0) {
-                MText("UNKNOWN: $unknownTotal", color = Phosphor.amber, size = 10.sp)
+                MText("UNK: $unknownTotal", color = Phosphor.amber, size = 10.sp)
             }
         }
 
-        // Filter chips and search bar
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -225,10 +226,9 @@ fun VendorsPanel(
 
             Spacer(Modifier.weight(1f))
 
-            // Compact search input
             Row(
                 modifier = Modifier
-                    .width(130.dp)
+                    .width(126.dp)
                     .background(Phosphor.bg, RoundedCornerShape(6.dp))
                     .border(1.dp, Phosphor.edge, RoundedCornerShape(6.dp))
                     .padding(horizontal = 6.dp, vertical = 3.dp),
@@ -261,7 +261,6 @@ fun VendorsPanel(
             }
         }
 
-        // Vendor list
         val maxGroupCount = remember(groups) { groups.maxOfOrNull { it.totalCount } ?: 1 }
 
         LazyColumn(
@@ -269,10 +268,12 @@ fun VendorsPanel(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             items(groups, key = { it.name }) { vendor ->
-                val color = remember(vendor.hue) { vendorColor(vendor.hue) }
+                val color = remember(vendor.hue, vendor.isRandomized) {
+                    if (vendor.isRandomized) Phosphor.purple else vendorColor(vendor.hue)
+                }
                 val pct = (vendor.totalCount * 100f / totalCount.coerceAtLeast(1)).toInt()
                 val hasSelected = selectedMac != null && vendor.devices.any { it.mac == selectedMac }
-                val isExpanded = if (vendor.name in collapsedVendors) false else (vendor.name in expandedVendors || hasSelected)
+                val isExpanded = (vendor.name in toggledVendors) xor hasSelected
 
                 Column(
                     modifier = Modifier
@@ -284,111 +285,73 @@ fun VendorsPanel(
                             RoundedCornerShape(8.dp),
                         )
                         .clickable {
-                            if (isExpanded) {
-                                expandedVendors = expandedVendors - vendor.name
-                                collapsedVendors = collapsedVendors + vendor.name
-                            } else {
-                                collapsedVendors = collapsedVendors - vendor.name
-                                expandedVendors = expandedVendors + vendor.name
-                            }
+                            toggledVendors = if (vendor.name in toggledVendors) toggledVendors - vendor.name else toggledVendors + vendor.name
                         }
                         .padding(8.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
-                    // Header row
                     Row(
                         Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        // Monogram badge
                         Box(
                             Modifier
-                                .size(32.dp)
+                                .size(30.dp)
                                 .background(color.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
                                 .border(1.dp, color, RoundedCornerShape(6.dp)),
                             contentAlignment = Alignment.Center,
                         ) {
-                            MText(vendor.monogram, color = color, size = 11.sp, weight = FontWeight.Bold)
+                            MText(vendor.monogram, color = color, size = 10.5.sp, weight = FontWeight.Bold)
                         }
 
-                        // Vendor title & details
                         Column(Modifier.weight(1f)) {
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                 MText(
                                     vendor.name,
                                     color = Phosphor.text,
-                                    size = 11.sp,
+                                    size = 10.5.sp,
                                     weight = FontWeight.Bold,
                                     maxLines = 1,
                                     modifier = Modifier.weight(1f),
                                 )
-                                MText(
-                                    "${vendor.totalCount} ($pct%)",
-                                    color = color,
-                                    size = 11.sp,
-                                    weight = FontWeight.Bold,
-                                )
-                                MText(
-                                    if (isExpanded) " [-]" else " [+]",
-                                    color = Phosphor.dim,
-                                    size = 11.sp,
-                                )
+                                MText("${vendor.totalCount} ($pct%)", color = color, size = 10.5.sp, weight = FontWeight.Bold)
+                                MText(if (isExpanded) " [-]" else " [+]", color = Phosphor.dim, size = 10.5.sp)
                             }
                             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                MText(
-                                    "${vendor.wifiCount} Wi-Fi, ${vendor.btCount} BT",
-                                    color = Phosphor.sub,
-                                    size = 9.sp,
-                                )
-                                MText(
-                                    "Best: ${vendor.bestRssi} dBm",
-                                    color = Phosphor.forRssi(vendor.bestRssi),
-                                    size = 9.sp,
-                                )
+                                MText("${vendor.wifiCount} Wi-Fi, ${vendor.btCount} BT", color = Phosphor.sub, size = 9.sp)
+                                MText("Best: ${vendor.bestRssi} dBm", color = Phosphor.forRssi(vendor.bestRssi), size = 9.sp)
                             }
                         }
                     }
 
-                    // Stacked proportion bar (Wi-Fi green, BT amber)
                     val barFrac = vendor.totalCount / maxGroupCount.toFloat()
                     Row(
                         Modifier
                             .fillMaxWidth(barFrac.coerceIn(0.04f, 1f))
-                            .height(4.dp)
+                            .height(3.dp)
                             .background(Phosphor.grid, RoundedCornerShape(2.dp)),
                     ) {
                         if (vendor.wifiCount > 0) {
-                            Box(
-                                Modifier
-                                    .fillMaxHeight()
-                                    .weight(vendor.wifiCount.toFloat())
-                                    .background(Phosphor.cyan, RoundedCornerShape(2.dp)),
-                            )
+                            Box(Modifier.fillMaxHeight().weight(vendor.wifiCount.toFloat()).background(Phosphor.green, RoundedCornerShape(2.dp)))
                         }
                         if (vendor.btCount > 0) {
-                            Box(
-                                Modifier
-                                    .fillMaxHeight()
-                                    .weight(vendor.btCount.toFloat())
-                                    .background(Phosphor.amber, RoundedCornerShape(2.dp)),
-                            )
+                            Box(Modifier.fillMaxHeight().weight(vendor.btCount.toFloat()).background(Phosphor.cyan, RoundedCornerShape(2.dp)))
                         }
                     }
 
-                    // Expanded device list
                     if (isExpanded) {
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(3.dp))
                         Box(Modifier.fillMaxWidth().height(1.dp).background(Phosphor.grid))
                         Spacer(Modifier.height(2.dp))
 
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             vendor.devices.forEach { d ->
                                 val isSelected = d.mac == selectedMac
-                                val dName = if (d.name.isNotBlank() && d.name != d.mac) d.name else "(No SSID / Hidden)"
-                                val isWifi = d.type == "W"
-                                val typeTag = if (isWifi) "[W]" else if (d.type == "B") "[B]" else "[BLE]"
-                                val typeColor = if (isWifi) Phosphor.cyan else Phosphor.amber
+                                val dName = if (d.name.isNotBlank() && d.name != d.mac) d.name else "(Hidden / Unnamed)"
+                                val cat = classifications[d.mac]?.category ?: DetectionCategory.NORMAL
+                                val catColor = Phosphor.forCategory(cat)
+                                val chText = d.channelSummary
 
                                 Row(
                                     Modifier
@@ -399,7 +362,7 @@ fun VendorsPanel(
                                         )
                                         .border(
                                             1.dp,
-                                            if (isSelected) Phosphor.green else Color.Transparent,
+                                            if (isSelected) Phosphor.text else Color.Transparent,
                                             RoundedCornerShape(4.dp),
                                         )
                                         .clickable { onSelect(if (isSelected) null else d.mac) }
@@ -407,38 +370,32 @@ fun VendorsPanel(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
-                                    MText(typeTag, color = typeColor, size = 9.sp, weight = FontWeight.Bold)
+                                    Box(Modifier.size(7.dp).background(catColor, CircleShape))
                                     Column(Modifier.weight(1f)) {
                                         MText(
                                             dName,
                                             color = if (dName.startsWith("(")) Phosphor.dim else Phosphor.text,
-                                            size = 10.sp,
+                                            size = 9.5.sp,
                                             maxLines = 1,
                                         )
-                                        MText(d.mac, color = Phosphor.dim, size = 9.sp)
-                                    }
-                                    if (isWifi && d.securitySuite.label.isNotEmpty()) {
-                                        val secColor = when {
-                                            d.securitySuite == SecuritySuite.WEP -> Phosphor.red
-                                            d.securitySuite.isInsecure -> Phosphor.amber
-                                            else -> Phosphor.sub
+                                        val sub = buildString {
+                                            append(d.mac)
+                                            if (chText.isNotEmpty()) append(" • ").append(chText)
+                                            if (d.type == "W" && d.securitySuite != SecuritySuite.UNKNOWN) {
+                                                append(" • ").append(d.securitySuite.shortLabel)
+                                            }
                                         }
-                                        val secLabel = if (d.securitySuite == SecuritySuite.WEP) "WEP ⚠️" else d.securitySuite.label
-                                        MText(secLabel, color = secColor, size = 8.sp, weight = if (d.securitySuite.isInsecure) FontWeight.Bold else FontWeight.Normal)
+                                        MText(sub, color = Phosphor.sub, size = 8.5.sp, maxLines = 1)
+                                    }
+                                    if (cat != DetectionCategory.NORMAL) {
+                                        MText(cat.shortTag, color = catColor, size = 8.sp, weight = FontWeight.Bold)
                                     }
                                     MText(
                                         "${d.rssi} dBm",
-                                        color = Phosphor.forRssi(d.rssi),
+                                        color = catColor,
                                         size = 9.sp,
                                         weight = FontWeight.Bold,
                                     )
-                                    val meter = when (barsFor(d.rssi)) {
-                                        4 -> "||||"
-                                        3 -> "|||."
-                                        2 -> "||.."
-                                        else -> "|..."
-                                    }
-                                    MText(meter, color = Phosphor.forRssi(d.rssi), size = 8.sp)
                                 }
                             }
                         }
