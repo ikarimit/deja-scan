@@ -34,4 +34,12 @@ class MacUtilTest {
         assertEquals("Far", MacUtil.proximity(-80))
         assertEquals("Faint", MacUtil.proximity(-95))
     }
+
+    @Test fun cleanAirTextStripsControlsBidiAndNewlines() {
+        assertEquals("", MacUtil.cleanAirText(null))
+        assertEquals("", MacUtil.cleanAirText("<unknown ssid>"))
+        assertEquals("Cafe Net", MacUtil.cleanAirText("  Cafe\n\r\tNet  "))
+        assertEquals("CleanSSID", MacUtil.cleanAirText("Clean\u0000\u001B\u007F\u202ESSID\uFFFD"))
+        assertEquals(32, MacUtil.cleanAirText("A".repeat(80), maxLen = 32).length)
+    }
 }

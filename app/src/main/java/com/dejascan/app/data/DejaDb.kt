@@ -24,6 +24,8 @@ data class Device(
     val lon: Double,
     val randomised: Boolean,
     val watched: Boolean,
+    val freq: Int = 0,
+    val caps: String = "",
 )
 
 /** One WiGLE observation (a place a device was recorded). */
@@ -37,13 +39,11 @@ data class GeoCell(val count: Int, val lat: Double, val lon: Double, val mac: St
 
 data class DayHit(val mac: String, val lat: Double, val lon: Double, val time: Long)
 
-data class PointCounts(val wigle: Int, val own: Int)
-
 /**
  * Our own database, filled from a WiGLE database. WiGLE type codes: W=Wi-Fi, B=Bluetooth, E=BLE.
  * Tables: device (one row per device), obs (WiGLE observations), sight (this app's own sightings).
  */
-class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
+class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 8) {
 
     /** Write-ahead logging lets the scan service read while an import is writing. */
     override fun onConfigure(db: SQLiteDatabase) {
@@ -60,7 +60,9 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
                 "lat REAL NOT NULL," +
                 "lon REAL NOT NULL," +
                 "random INTEGER NOT NULL," +
-                "watched INTEGER NOT NULL DEFAULT 0)"
+                "watched INTEGER NOT NULL DEFAULT 0," +
+                "freq INTEGER NOT NULL DEFAULT 0," +
+                "caps TEXT NOT NULL DEFAULT '')"
         )
         db.execSQL("CREATE INDEX idx_device_type ON device(type)")
         db.execSQL("CREATE INDEX idx_device_pos ON device(lat, lon)")
@@ -68,6 +70,7 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
         createV4(db)
         createV5(db)
         createV6(db)
+        createV8(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -76,6 +79,20 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
         if (oldVersion < 4) createV4(db)
         if (oldVersion < 5) createV5(db)
         if (oldVersion < 6) createV6(db)
+        if (oldVersion < 7) createV7(db)
+        if (oldVersion < 8) createV8(db)
+    }
+
+    private fun createV7(db: SQLiteDatabase) {
+        runCatching { db.execSQL("ALTER TABLE device ADD COLUMN freq INTEGER NOT NULL DEFAULT 0") }
+        runCatching { db.execSQL("ALTER TABLE device ADD COLUMN caps TEXT NOT NULL DEFAULT ''") }
+    }
+
+    /** Deduplicates observations by (mac, time) and enforces uniqueness across merges. */
+    private fun createV8(db: SQLiteDatabase) {
+        db.execSQL("DELETE FROM obs WHERE rowid NOT IN (SELECT MIN(rowid) FROM obs GROUP BY mac, time)")
+        db.execSQL("DROP INDEX IF EXISTS idx_obs_mac")
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_obs_mac_time ON obs(mac, time)")
     }
 
     /** Pre-counted map cells (see CellGrid), rebuilt after every import. */
@@ -136,21 +153,73 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
         db.beginTransaction()
         try {
             val ins = db.compileStatement(
-                "INSERT OR IGNORE INTO device(mac,name,type,lasttime,lat,lon,random,watched) VALUES(?,?,?,?,?,?,?,0)"
+                "INSERT OR IGNORE INTO device(mac,name,type,lasttime,lat,lon,random,watched,freq,caps) VALUES(?,?,?,?,?,?,?,0,?,?)"
             )
             val upd = db.compileStatement(
-                "UPDATE device SET name=?,type=?,lasttime=?,lat=?,lon=?,random=? WHERE mac=?"
+                "UPDATE device SET name=?,type=?,lasttime=?,lat=?,lon=?,random=?,freq=CASE WHEN ?!=0 THEN ? ELSE freq END,caps=CASE WHEN ?!='' THEN ? ELSE caps END WHERE mac=?"
             )
             for (d in rows) {
                 ins.clearBindings()
                 ins.bindString(1, d.mac); ins.bindString(2, d.name); ins.bindString(3, d.type)
                 ins.bindLong(4, d.lastTime); ins.bindDouble(5, d.lat); ins.bindDouble(6, d.lon)
                 ins.bindLong(7, if (d.randomised) 1 else 0)
+                ins.bindLong(8, d.freq.toLong()); ins.bindString(9, d.caps)
                 ins.executeInsert()
                 upd.clearBindings()
                 upd.bindString(1, d.name); upd.bindString(2, d.type); upd.bindLong(3, d.lastTime)
                 upd.bindDouble(4, d.lat); upd.bindDouble(5, d.lon)
-                upd.bindLong(6, if (d.randomised) 1 else 0); upd.bindString(7, d.mac)
+                upd.bindLong(6, if (d.randomised) 1 else 0)
+                upd.bindLong(7, d.freq.toLong()); upd.bindLong(8, d.freq.toLong())
+                upd.bindString(9, d.caps); upd.bindString(10, d.caps)
+                upd.bindString(11, d.mac)
+                upd.executeUpdateDelete()
+                n++
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        return n
+    }
+
+    /**
+     * Merges live device findings into the local `device` table without overwriting an existing
+     * non-empty name or valid coordinates with empty/zero values, while preserving `watched`.
+     */
+    fun mergeDevicesBatch(rows: Sequence<Device>): Int {
+        val db = writableDatabase
+        var n = 0
+        db.beginTransaction()
+        try {
+            val ins = db.compileStatement(
+                "INSERT OR IGNORE INTO device(mac,name,type,lasttime,lat,lon,random,watched,freq,caps) VALUES(?,?,?,?,?,?,?,0,?,?)"
+            )
+            val upd = db.compileStatement(
+                "UPDATE device SET " +
+                    "name = CASE WHEN (name = '' OR name IS NULL) AND ? != '' THEN ? ELSE name END, " +
+                    "lasttime = MAX(lasttime, ?), " +
+                    "lat = CASE WHEN ? != 0.0 THEN ? ELSE lat END, " +
+                    "lon = CASE WHEN ? != 0.0 THEN ? ELSE lon END, " +
+                    "freq = CASE WHEN ? != 0 THEN ? ELSE freq END, " +
+                    "caps = CASE WHEN ? != '' THEN ? ELSE caps END " +
+                    "WHERE mac = ?"
+            )
+            for (d in rows) {
+                ins.clearBindings()
+                ins.bindString(1, d.mac); ins.bindString(2, d.name); ins.bindString(3, d.type)
+                ins.bindLong(4, d.lastTime); ins.bindDouble(5, d.lat); ins.bindDouble(6, d.lon)
+                ins.bindLong(7, if (d.randomised) 1 else 0)
+                ins.bindLong(8, d.freq.toLong()); ins.bindString(9, d.caps)
+                ins.executeInsert()
+
+                upd.clearBindings()
+                upd.bindString(1, d.name); upd.bindString(2, d.name)
+                upd.bindLong(3, d.lastTime)
+                upd.bindDouble(4, d.lat); upd.bindDouble(5, d.lat)
+                upd.bindDouble(6, d.lon); upd.bindDouble(7, d.lon)
+                upd.bindLong(8, d.freq.toLong()); upd.bindLong(9, d.freq.toLong())
+                upd.bindString(10, d.caps); upd.bindString(11, d.caps)
+                upd.bindString(12, d.mac)
                 upd.executeUpdateDelete()
                 n++
             }
@@ -311,7 +380,7 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
     }
 
     private fun key(cx: Int, cy: Int, type: String): Long =
-        (cx.toLong() * 1_048_576L + cy) * 4 + (if (type == "W") 0 else if (type == "B") 1 else 2)
+        (cx.toLong() * 1_048_576L + cy) * 4 + when (type) { "W" -> 0; "B" -> 1; else -> 2 }
 
     /** Pre-counted cells of one zoom level inside a cell range, summed over the wanted types. */
     fun cellsInView(z: Int, cxMin: Int, cxMax: Int, cyMin: Int, cyMax: Int, types: Set<String>, linkedOnly: Boolean = false): List<GeoCell> {
@@ -348,6 +417,21 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
         return readableDatabase.rawQuery(sql, macs.toTypedArray()).use { toList(it) }
     }
 
+    /** Returns the subset of [macs] that exist in the local device table. */
+    fun filterKnown(macs: Collection<String>): Set<String> {
+        if (macs.isEmpty()) return emptySet()
+        val out = HashSet<String>()
+        for (chunk in macs.chunked(400)) {
+            readableDatabase.rawQuery(
+                "SELECT mac FROM device WHERE mac IN (${chunk.joinToString(",") { "?" }})",
+                chunk.toTypedArray(),
+            ).use { c ->
+                while (c.moveToNext()) out.add(c.getString(0))
+            }
+        }
+        return out
+    }
+
     /**
      * Live match: is this heard address one the active watch mode cares about?
      * [kinds] are the WiGLE type codes the radio can produce (Bluetooth sightings: B and E).
@@ -370,7 +454,7 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
         val sql = "SELECT $COLS FROM device WHERE $where LIMIT 1"
         return try {
             readableDatabase.rawQuery(sql, args.toTypedArray()).use { toList(it).firstOrNull() }
-        } catch (e: SQLiteException) {
+        } catch (_: SQLiteException) {
             null // database busy or unavailable: skip this reading instead of crashing the service
         }
     }
@@ -379,39 +463,45 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
 
     fun beginObsImport() {
         writableDatabase.execSQL("DROP INDEX IF EXISTS idx_obs_mac")
+        writableDatabase.execSQL("DROP INDEX IF EXISTS idx_obs_mac_time")
         writableDatabase.execSQL("DROP INDEX IF EXISTS idx_obs_time")
         writableDatabase.execSQL("DROP INDEX IF EXISTS idx_obs_pos")
         writableDatabase.execSQL("DELETE FROM obs")
     }
 
-    fun insertObsBatch(rows: List<ObsRow>) {
-        if (rows.isEmpty()) return
+    /** Inserts observations while skipping any `(mac, time)` duplicates already in `obs`. */
+    fun insertObsBatch(rows: List<ObsRow>): Int {
+        if (rows.isEmpty()) return 0
         val db = writableDatabase
+        var inserted = 0
         db.beginTransaction()
         try {
-            val st = db.compileStatement("INSERT INTO obs(mac,time,lat,lon,level) VALUES(?,?,?,?,?)")
+            val st = db.compileStatement("INSERT OR IGNORE INTO obs(mac,time,lat,lon,level) VALUES(?,?,?,?,?)")
             for (r in rows) {
                 st.clearBindings()
                 st.bindString(1, r.mac); st.bindLong(2, r.time)
                 st.bindDouble(3, r.lat); st.bindDouble(4, r.lon); st.bindLong(5, r.level.toLong())
-                st.executeInsert()
+                if (st.executeInsert() != -1L) inserted++
             }
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
+        return inserted
     }
 
     fun endObsImport() {
-        writableDatabase.execSQL("CREATE INDEX IF NOT EXISTS idx_obs_mac ON obs(mac)")
+        writableDatabase.execSQL("DELETE FROM obs WHERE rowid NOT IN (SELECT MIN(rowid) FROM obs GROUP BY mac, time)")
+        writableDatabase.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS idx_obs_mac_time ON obs(mac, time)")
         writableDatabase.execSQL("CREATE INDEX IF NOT EXISTS idx_obs_time ON obs(time)")
         writableDatabase.execSQL("CREATE INDEX IF NOT EXISTS idx_obs_pos ON obs(lat, lon)")
     }
 
-    /** One place a device was seen: a WiGLE observation, one of my own scans, or its WiGLE last-known place. */
+    /** One place a device was seen: a WiGLE observation, one of my own unmerged scans, or its WiGLE last-known place. */
     fun hitsOnDay(startMs: Long, endMs: Long, limit: Int): List<DayHit> {
         val sql = "SELECT mac,lat,lon,time FROM obs WHERE time>=? AND time<? " +
             "UNION ALL SELECT mac,lat,lon,time FROM sight WHERE time>=? AND time<? " +
+            "AND NOT EXISTS (SELECT 1 FROM obs WHERE obs.mac = sight.mac AND obs.time = sight.time) " +
             "UNION ALL SELECT mac,lat,lon,lasttime FROM device WHERE lasttime>=? AND lasttime<? AND (lat != 0 OR lon != 0) LIMIT ?"
         val a = startMs.toString(); val b = endMs.toString()
         return readableDatabase.rawQuery(sql, arrayOf(a, b, a, b, a, b, limit.toString())).use { c ->
@@ -433,17 +523,28 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
         }
     }
 
-    /** Every recorded place (lat, lon, time) of the given devices, oldest first. */
+    /** Every recorded place (lat, lon, time) of the given devices, oldest first, deduplicating scans merged into `obs`. */
     fun placesOf(macs: List<String>): Map<String, List<DoubleArray>> {
         val out = HashMap<String, ArrayList<DoubleArray>>()
         for (chunk in macs.chunked(400)) {
             val marks = chunk.joinToString(",") { "?" }
-            for ((n, table) in listOf("obs", "sight").withIndex()) {
-                readableDatabase.rawQuery("SELECT mac,lat,lon,time FROM $table WHERE mac IN ($marks)", chunk.toTypedArray()).use { c ->
-                    while (c.moveToNext()) {
-                        // [lat, lon, time, source] with source 0 = WiGLE observation, 1 = my own scan
-                        out.getOrPut(c.getString(0)) { ArrayList() }.add(doubleArrayOf(c.getDouble(1), c.getDouble(2), c.getLong(3).toDouble(), n.toDouble()))
-                    }
+            readableDatabase.rawQuery("SELECT mac,lat,lon,time FROM obs WHERE mac IN ($marks)", chunk.toTypedArray()).use { c ->
+                while (c.moveToNext()) {
+                    // [lat, lon, time, source] with source 0 = WiGLE observation, 1 = my own scan
+                    out.getOrPut(c.getString(0)) { ArrayList() }.add(
+                        doubleArrayOf(c.getDouble(1), c.getDouble(2), c.getLong(3).toDouble(), 0.0)
+                    )
+                }
+            }
+            readableDatabase.rawQuery(
+                "SELECT mac,lat,lon,time FROM sight WHERE mac IN ($marks) " +
+                    "AND NOT EXISTS (SELECT 1 FROM obs WHERE obs.mac = sight.mac AND obs.time = sight.time)",
+                chunk.toTypedArray(),
+            ).use { c ->
+                while (c.moveToNext()) {
+                    out.getOrPut(c.getString(0)) { ArrayList() }.add(
+                        doubleArrayOf(c.getDouble(1), c.getDouble(2), c.getLong(3).toDouble(), 1.0)
+                    )
                 }
             }
         }
@@ -491,15 +592,23 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
         writableDatabase.execSQL("DELETE FROM sight")
     }
 
-    fun counts(macs: Collection<String>): Map<String, PointCounts> {
-        val out = HashMap<String, PointCounts>()
-        for (m in macs) {
-            val w = readableDatabase.rawQuery("SELECT COUNT(*) FROM obs WHERE mac=?", arrayOf(m)).use { if (it.moveToFirst()) it.getInt(0) else 0 }
-            val o = readableDatabase.rawQuery("SELECT COUNT(*) FROM sight WHERE mac=?", arrayOf(m)).use { if (it.moveToFirst()) it.getInt(0) else 0 }
-            out[m] = PointCounts(w, o)
+    fun allSights(): List<WigleMerger.SightRecord> =
+        readableDatabase.rawQuery("SELECT mac,time,lat,lon,acc,rssi FROM sight", null).use { c ->
+            val out = ArrayList<WigleMerger.SightRecord>()
+            while (c.moveToNext()) {
+                out.add(
+                    WigleMerger.SightRecord(
+                        mac = c.getString(0),
+                        time = c.getLong(1),
+                        lat = c.getDouble(2),
+                        lon = c.getDouble(3),
+                        acc = c.getFloat(4),
+                        rssi = c.getInt(5),
+                    )
+                )
+            }
+            out
         }
-        return out
-    }
 
     private fun toList(c: android.database.Cursor): List<Device> {
         val out = ArrayList<Device>()
@@ -509,6 +618,7 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
                     mac = c.getString(0), name = c.getString(1), type = c.getString(2),
                     lastTime = c.getLong(3), lat = c.getDouble(4), lon = c.getDouble(5),
                     randomised = c.getInt(6) != 0, watched = c.getInt(7) != 0,
+                    freq = c.getInt(8), caps = c.getString(9).orEmpty(),
                 )
             )
         }
@@ -516,6 +626,6 @@ class DejaDb(context: Context) : SQLiteOpenHelper(context, "deja.db", null, 6) {
     }
 
     private companion object {
-        const val COLS = "mac,name,type,lasttime,lat,lon,random,watched"
+        const val COLS = "mac,name,type,lasttime,lat,lon,random,watched,freq,caps"
     }
 }

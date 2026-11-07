@@ -9,7 +9,6 @@ import android.app.PendingIntent
 import android.app.Service
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
-import com.dejascan.app.data.Device
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
@@ -20,10 +19,10 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
-import android.net.wifi.WifiManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -31,32 +30,39 @@ import android.os.IBinder
 import android.os.Looper
 import com.dejascan.app.MainActivity
 import com.dejascan.app.data.DejaDb
+import com.dejascan.app.data.Device
 import com.dejascan.app.data.Prefs
 import com.dejascan.app.data.Vendors
+import com.dejascan.app.scan.promiscuous.PrefsRestoreStateStore
+import com.dejascan.app.scan.promiscuous.PromiscuousBus
+import com.dejascan.app.scan.promiscuous.PromiscuousMonitor
+import com.dejascan.app.scan.promiscuous.PromiscuousTracker
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 /**
- * Foreground service that listens for Wi-Fi, BLE and Bluetooth Classic and reports addresses that
- * match the watch settings. Wi-Fi scans are requested every [WIFI_INTERVAL_MS] to stay inside the
- * platform limit of 4 foreground scans per 2 minutes (Android 9+); results from other apps' scans
- * are also used.
+ * Foreground service that listens for Wi-Fi, BLE, Bluetooth Classic, and (when rooted & enabled)
+ * passive 802.11 monitor/promiscuous frames. Notifications are kept strictly minimal: one silent
+ * collapsed ongoing indicator (`IMPORTANCE_MIN`) and, only while backgrounded, a single rate-limited
+ * silent summary when watched targets appear or move closer.
  */
 @SuppressLint("MissingPermission")
 class ScanService : Service() {
 
     private lateinit var db: DejaDb
     private lateinit var prefs: Prefs
+    private lateinit var promiscMonitor: PromiscuousMonitor
     private val handler = Handler(Looper.getMainLooper())
     private val approach = ApproachTracker()
     private val io = Executors.newSingleThreadExecutor()
     private val lastSave = HashMap<String, Long>()
+    private var lastHitNotifyMs = 0L
     private var locMgr: LocationManager? = null
 
     private val locListener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
             val now = System.currentTimeMillis()
             val cur = SightingBus.phone.value
-            // keep a fresh, more accurate GPS fix over a coarser network fix
             if (loc.provider == LocationManager.NETWORK_PROVIDER && cur != null &&
                 now - cur.time < 15_000 && cur.acc <= loc.accuracy
             ) return
@@ -68,6 +74,7 @@ class ScanService : Service() {
         override fun onProviderEnabled(provider: String) = Unit
         override fun onProviderDisabled(provider: String) = Unit
     }
+
     private var wifi: WifiManager? = null
     private var btAdapter: BluetoothAdapter? = null
     private var receiversRegistered = false
@@ -106,7 +113,8 @@ class ScanService : Service() {
 
     private val bleCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            onHeard(result.device.address, BT_KINDS, result.rssi, result.scanRecord?.deviceName ?: "", 0, bleAdv(result))
+            val cleanName = MacUtil.cleanAirText(result.scanRecord?.deviceName)
+            onHeard(result.device.address, BT_KINDS, result.rssi, cleanName, 0, bleAdv(result, cleanName))
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -118,21 +126,67 @@ class ScanService : Service() {
         super.onCreate()
         db = DejaDb(this)
         prefs = Prefs(this)
+        promiscMonitor = PromiscuousMonitor(
+            restoreStore = PrefsRestoreStateStore(prefs),
+            onIngestEvent = ::onPromiscuousEvent,
+        )
         wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         btAdapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
     }
 
+    private fun onPromiscuousEvent(ev: PromiscuousTracker.IngestEvent) {
+        val bssid = ev.apBssid ?: return
+        if (!SightingBus.running.value) return
+        val existing = SightingBus.sightings.value[bssid]
+        val now = System.currentTimeMillis()
+        if (!ev.unmaskedNow && existing != null && now - existing.time < 2_500L) return
+        val cleanSsid = MacUtil.cleanAirText(ev.apSsid, maxLen = 32)
+        val adv = buildList {
+            if (cleanSsid.isNotEmpty()) add("SSID: $cleanSsid")
+            if (ev.unmaskedNow && cleanSsid.isNotEmpty()) {
+                add("Unmasked SSID: $cleanSsid (via ${ev.unmaskMethod})")
+            }
+        }
+        val suite = when {
+            existing != null && existing.securitySuite != SecuritySuite.UNKNOWN -> existing.securitySuite
+            !ev.privacyBit && ev.freqMhz > 0 -> SecuritySuite.OPEN
+            else -> SecuritySuite.UNKNOWN
+        }
+        onHeard(
+            rawMac = bssid,
+            kinds = WIFI_KINDS,
+            rssi = ev.rssi,
+            liveName = cleanSsid,
+            freq = ev.freqMhz,
+            adv = adv,
+            securitySuite = suite,
+        )
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopSelf()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            ACTION_SYNC_PROMISC -> {
+                if (SightingBus.running.value) syncPromiscuousMode()
+                return START_NOT_STICKY
+            }
         }
         createChannels()
-        startForeground(
-            ONGOING_ID, ongoingNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
-        )
-        if (!SightingBus.running.value) beginScanning()
+        startForeground(ONGOING_ID, ongoingNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+        if (!SightingBus.running.value) beginScanning() else syncPromiscuousMode()
         return START_NOT_STICKY
+    }
+
+    private fun syncPromiscuousMode() {
+        if (prefs.promiscuousEnabled) {
+            // PromiscuousMonitor verifies root status asynchronously on its own worker thread
+            promiscMonitor.start(prefs.promiscuousIface, prefs.promiscuousDriverSwitch)
+        } else {
+            promiscMonitor.stop()
+        }
     }
 
     private fun beginScanning() {
@@ -149,8 +203,9 @@ class ScanService : Service() {
         if (has(Manifest.permission.ACCESS_FINE_LOCATION)) {
             handler.post(wifiTick)
             startLocation()
+        } else {
+            SightingBus.message.value = "Location permission missing: Wi-Fi scanning off"
         }
-        else SightingBus.message.value = "Location permission missing: Wi-Fi scanning off"
 
         if (btAdapter?.isEnabled == true && hasBtScan()) {
             try {
@@ -160,97 +215,183 @@ class ScanService : Service() {
                     bleCallback,
                 )
                 bleActive = true
-            } catch (e: SecurityException) {
+            } catch (_: SecurityException) {
                 SightingBus.message.value = "Bluetooth permission refused"
             }
             startClassicDiscovery()
         } else {
             SightingBus.message.value = SightingBus.message.value.ifEmpty { "Bluetooth off or permission missing" }
         }
+
+        syncPromiscuousMode()
     }
 
     private fun startLocation() {
         val lm = getSystemService(LocationManager::class.java) ?: return
         locMgr = lm
         for (p in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
-            try {
+            runCatching {
                 if (lm.isProviderEnabled(p)) lm.requestLocationUpdates(p, 3000L, 0f, locListener, Looper.getMainLooper())
-            } catch (_: Exception) {
             }
         }
     }
 
     private fun startClassicDiscovery() {
-        try {
+        runCatching {
             if (btAdapter?.isDiscovering == false) btAdapter?.startDiscovery()
-        } catch (_: SecurityException) {
         }
     }
 
     private fun readWifiResults() {
         val results = try { wifi?.scanResults } catch (_: SecurityException) { null } ?: return
+        val unmaskedMap = PromiscuousBus.snapshot.value.unmasked
         for (r in results) {
-            @Suppress("DEPRECATION") val ssid = r.SSID ?: ""
-            val adv = listOf(
-                "SSID: ${ssid.ifEmpty { "(hidden)" }}",
-                "Channel: ${channelFor(r.frequency)} (${r.frequency} MHz)",
-                "Security: ${r.capabilities}",
+            @Suppress("DEPRECATION") val rawSsid = MacUtil.cleanAirText(r.SSID, maxLen = 32)
+            val normBssid = MacUtil.normalize(r.BSSID)
+            if (normBssid != null) {
+                PromiscuousBus.tracker.noteKnownAp(normBssid, rawSsid.isEmpty())
+            }
+            val unmasked = normBssid?.let(unmaskedMap::get)
+            val cleanUnmasked = MacUtil.cleanAirText(unmasked?.ssid, maxLen = 32)
+            val ssid = rawSsid.ifEmpty { cleanUnmasked }
+
+            val cleanCaps = MacUtil.cleanAirText(r.capabilities, maxLen = 256)
+            val sec = WifiSecurity.parse(cleanCaps)
+            val channelWidth = r.channelWidth
+            val centerFreq0 = r.centerFreq0
+            val rawStandard = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) r.wifiStandard else 0
+            val wifiStandard = WifiStandardHelper.resolveStandard(rawStandard, r.frequency, channelWidth)
+            val stdLabel = WifiStandardHelper.getStandardName(wifiStandard, r.frequency)
+            val widthLabel = ChannelWidthHelper.getWidthLabel(channelWidth)
+            val band = WifiBand.forFrequency(r.frequency)
+            val span = ChannelWidthHelper.getFrequencySpan(r.frequency, channelWidth, centerFreq0)
+
+            val adv = buildList {
+                add("SSID: ${ssid.ifEmpty { "(hidden)" }}")
+                if (unmasked != null && cleanUnmasked.isNotEmpty() && rawSsid.isEmpty()) {
+                    add("Unmasked SSID: $cleanUnmasked (via ${unmasked.source})")
+                }
+                add("Channel: ${channelFor(r.frequency)} • $widthLabel (${r.frequency} MHz, ${band.label})")
+                if (stdLabel.isNotEmpty() && stdLabel != "Unknown standard") add("Standard: $stdLabel")
+                val cfSuffix = if (centerFreq0 > 0 && centerFreq0 != r.frequency) ", Center: $centerFreq0 MHz" else ""
+                add("Bandwidth: $widthLabel (${span.first}–${span.last} MHz$cfSuffix)")
+                add("Security: ${sec.suite.label}")
+                if (sec.keyManagement.isNotEmpty() && sec.keyManagement != "None") add("Auth: ${sec.keyManagement}")
+                if (sec.ciphers.isNotEmpty()) add("Ciphers: ${sec.ciphers.joinToString(", ")}")
+                add("Mode: ${sec.mode.label} (${sec.mode.description})")
+                if (sec.hasWps) add("WPS: Supported" + (sec.wpsDetails?.let { " ($it)" }.orEmpty()))
+                if (sec.isFastTransition) add("802.11r FT: Fast BSS Transition supported")
+                if (sec.isPasspoint) add("Passpoint: Hotspot 2.0 supported")
+                if (sec.raw.isNotEmpty()) add("Raw Caps: ${sec.raw}")
+            }
+            onHeard(
+                rawMac = r.BSSID,
+                kinds = WIFI_KINDS,
+                rssi = r.level,
+                liveName = ssid,
+                freq = r.frequency,
+                adv = adv,
+                securitySuite = sec.suite,
+                channelWidth = channelWidth,
+                centerFreq0 = centerFreq0,
+                wifiStandard = wifiStandard,
+                standardLabel = stdLabel,
+                rawCaps = sec.raw,
             )
-            onHeard(r.BSSID, WIFI_KINDS, r.level, ssid, r.frequency, adv)
         }
     }
 
-    private fun onHeard(rawMac: String?, kinds: Set<String>, rssi: Int, liveName: String, freq: Int, adv: List<String>) {
+    private fun onHeard(
+        rawMac: String?,
+        kinds: Set<String>,
+        rssi: Int,
+        liveName: String,
+        freq: Int,
+        adv: List<String>,
+        securitySuite: SecuritySuite = SecuritySuite.UNKNOWN,
+        channelWidth: Int = -1,
+        centerFreq0: Int = 0,
+        wifiStandard: Int = 0,
+        standardLabel: String = "",
+        rawCaps: String = "",
+    ) {
         val mac = MacUtil.normalize(rawMac) ?: return
-        val matched = db.match(mac, kinds, prefs.filter())
-        // other devices are still reported (for the map) but never alert and are kept out of the radar
-        val dev = matched ?: db.devices(listOf(mac)).firstOrNull() ?: Device(
-            mac = mac, name = "", type = kinds.first(), lastTime = 0L, lat = 0.0, lon = 0.0,
-            randomised = MacUtil.isRandomised(mac), watched = false,
-        )
+        val cleanName = MacUtil.cleanAirText(liveName)
         val now = System.currentTimeMillis()
-        SightingBus.report(dev, liveName, rssi, freq, adv, now, matched != null)
-        val fix = SightingBus.phone.value
-        val every = if (matched != null) 5_000L else 30_000L
-        if (fix != null && now - fix.time < 15_000 && fix.acc <= 50f && now - (lastSave[mac] ?: 0L) >= every) {
-            lastSave[mac] = now
-            io.execute { db.addSight(mac, now, fix.lat, fix.lon, fix.acc, rssi) }
-        }
-        if (matched != null && approach.onReading(mac, rssi, now)) {
-            val name = dev.name.ifEmpty { liveName }.ifEmpty { mac }
-            getSystemService(NotificationManager::class.java)
-                .notify(mac.hashCode(), hitNotification(name, mac, rssi))
+        try {
+            io.execute {
+                if (!SightingBus.running.value) return@execute
+                val filter = prefs.filter()
+                val matched = db.match(mac, kinds, filter)
+                val inDbDev = matched ?: db.devices(listOf(mac)).firstOrNull()
+                val dev = inDbDev ?: Device(
+                    mac = mac, name = "", type = kinds.first(), lastTime = 0L, lat = 0.0, lon = 0.0,
+                    randomised = MacUtil.isRandomised(mac), watched = false, freq = freq, caps = rawCaps,
+                )
+                SightingBus.report(
+                    dev = dev,
+                    liveName = cleanName,
+                    rssi = rssi,
+                    freq = freq,
+                    adv = adv,
+                    now = now,
+                    watched = matched != null,
+                    inDatabase = inDbDev != null,
+                    securitySuite = securitySuite,
+                    channelWidth = channelWidth,
+                    centerFreq0 = centerFreq0,
+                    wifiStandard = wifiStandard,
+                    standardLabel = standardLabel,
+                )
+                if (rssi <= -100) return@execute
+                val fix = SightingBus.phone.value
+                val every = if (matched != null) 5_000L else 30_000L
+                if (fix != null && now - fix.time < 15_000 && fix.acc <= 50f && now - (lastSave[mac] ?: 0L) >= every) {
+                    lastSave[mac] = now
+                    db.addSight(mac, now, fix.lat, fix.lon, fix.acc, rssi)
+                }
+                if (matched != null && approach.onReading(mac, rssi, now)) {
+                    if (!SightingBus.inForeground.value && prefs.notifyHits && now - lastHitNotifyMs >= HIT_COOLDOWN_MS) {
+                        lastHitNotifyMs = now
+                        val name = MacUtil.cleanAirText(dev.name.ifEmpty { cleanName }).ifEmpty { mac }
+                        val activeWatched = SightingBus.sightings.value.values.count { it.watched && now - it.time <= STALE_MS }
+                        getSystemService(NotificationManager::class.java)
+                            ?.notify(HIT_ID, hitNotification(name, mac, rssi, activeWatched))
+                    }
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            // Service shutting down
         }
     }
 
     private fun shortUuid(u: String): String =
         if (u.startsWith("0000") && u.endsWith("-0000-1000-8000-00805f9b34fb")) "0x" + u.substring(4, 8) else u
 
-    private fun bleAdv(r: ScanResult): List<String> {
-        val out = ArrayList<String>()
+    private fun bleAdv(r: ScanResult, cleanName: String): List<String> = buildList {
         val rec = r.scanRecord
-        rec?.deviceName?.let { out += "Name: $it" }
+        if (cleanName.isNotEmpty()) add("Name: $cleanName")
         rec?.serviceUuids?.takeIf { it.isNotEmpty() }?.let { l ->
-            out += "Services: " + l.joinToString { shortUuid(it.uuid.toString()) }
+            add("Services: " + l.joinToString { shortUuid(it.uuid.toString()) })
         }
-        rec?.manufacturerSpecificData?.let { m ->
-            if (m.size() > 0) out += "Manufacturer: " + (0 until m.size()).joinToString {
+        rec?.manufacturerSpecificData?.takeIf { it.size() > 0 }?.let { m ->
+            add("Manufacturer: " + (0 until m.size()).joinToString {
                 val id = m.keyAt(it)
                 (Vendors.forCompanyId(id) ?: "unknown") + " (0x%04X)".format(id)
-            }
+            })
         }
-        if (rec != null && rec.txPowerLevel != Int.MIN_VALUE) out += "TX power: ${rec.txPowerLevel} dBm"
-        out += "Connectable: ${r.isConnectable}"
-        return out
+        if (rec != null && rec.txPowerLevel != Int.MIN_VALUE) add("TX power: ${rec.txPowerLevel} dBm")
+        add("Connectable: ${r.isConnectable}")
     }
 
     private fun classicAdv(d: BluetoothDevice): List<String> = try {
-        d.bluetoothClass?.let { listOf("Class: 0x%06X".format(it.deviceClass)) } ?: emptyList()
+        d.bluetoothClass?.let { listOf("Class: 0x%06X".format(it.deviceClass)) }.orEmpty()
     } catch (_: SecurityException) {
         emptyList()
     }
 
-    private fun safeName(d: BluetoothDevice): String = try { d.name ?: "" } catch (_: SecurityException) { "" }
+    private fun safeName(d: BluetoothDevice): String =
+        try { MacUtil.cleanAirText(d.name) } catch (_: SecurityException) { "" }
 
     private fun has(p: String) = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
 
@@ -259,52 +400,75 @@ class ScanService : Service() {
         else has(Manifest.permission.ACCESS_FINE_LOCATION)
 
     private fun createChannels() {
-        val nm = getSystemService(NotificationManager::class.java)
+        val nm = getSystemService(NotificationManager::class.java) ?: return
+        nm.deleteNotificationChannel("security")
         nm.createNotificationChannel(
-            NotificationChannel(CH_ONGOING, "Scanning", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CH_ONGOING, "Active scan", NotificationManager.IMPORTANCE_MIN).apply {
+                description = "Minimal status while radio scanning is active"
+                setShowBadge(false)
+                enableVibration(false)
+                enableLights(false)
+            }
         )
         nm.createNotificationChannel(
-            NotificationChannel(CH_HITS, "Device nearby", NotificationManager.IMPORTANCE_HIGH)
+            NotificationChannel(CH_HITS, "Watched device summary", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Quiet background summary when watched devices appear nearby"
+                setShowBadge(false)
+                enableVibration(false)
+                enableLights(false)
+            }
         )
     }
 
-    private fun openApp() = PendingIntent.getActivity(
-        this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
-    )
+    private fun openApp(selectMac: String? = null): PendingIntent {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            if (selectMac != null) putExtra(MainActivity.EXTRA_SELECT_MAC, selectMac)
+        }
+        return PendingIntent.getActivity(
+            this, selectMac?.hashCode() ?: 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
 
     private fun ongoingNotification(): Notification {
         val stop = PendingIntent.getService(
-            this, 1, Intent(this, ScanService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE
+            this, 1, Intent(this, ScanService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE,
         )
         return Notification.Builder(this, CH_ONGOING)
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setContentTitle("Deja Scan is watching")
-            .setContentText("Listening for saved devices")
+            .setContentTitle("Deja Scan active")
+            .setContentText("Passive wireless scan running")
             .setContentIntent(openApp())
             .addAction(Notification.Action.Builder(null, "Stop", stop).build())
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .build()
     }
 
-    private fun hitNotification(name: String, mac: String, rssi: Int): Notification =
-        Notification.Builder(this, CH_HITS)
-            .setSmallIcon(android.R.drawable.stat_notify_error)
-            .setContentTitle("Saved device nearby")
-            .setContentText("$name ($mac) - ${MacUtil.proximity(rssi)}, $rssi dBm")
-            .setContentIntent(openApp())
+    private fun hitNotification(name: String, mac: String, rssi: Int, totalWatched: Int): Notification {
+        val suffix = if (totalWatched > 1) " (+${totalWatched - 1} more in range)" else ""
+        return Notification.Builder(this, CH_HITS)
+            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setContentTitle("Watched device nearby")
+            .setContentText("$name • $rssi dBm$suffix")
+            .setContentIntent(openApp(mac))
+            .setOnlyAlertOnce(true)
             .setAutoCancel(true)
             .build()
+    }
 
     override fun onDestroy() {
+        SightingBus.running.value = false
         handler.removeCallbacksAndMessages(null)
+        promiscMonitor.release()
         if (receiversRegistered) runCatching { unregisterReceiver(receiver) }
         if (bleActive) runCatching { btAdapter?.bluetoothLeScanner?.stopScan(bleCallback) }
         runCatching { if (btAdapter?.isDiscovering == true) btAdapter?.cancelDiscovery() }
         runCatching { locMgr?.removeUpdates(locListener) }
+        runCatching { getSystemService(NotificationManager::class.java)?.cancel(HIT_ID) }
         SightingBus.phone.value = null
-        io.execute { db.close() }
+        runCatching { io.execute { db.close() } }
         io.shutdown()
-        SightingBus.running.value = false
         super.onDestroy()
     }
 
@@ -312,9 +476,13 @@ class ScanService : Service() {
 
     companion object {
         const val ACTION_STOP = "com.dejascan.app.STOP"
-        private const val CH_ONGOING = "ongoing"
-        private const val CH_HITS = "hits"
+        const val ACTION_SYNC_PROMISC = "com.dejascan.app.SYNC_PROMISC"
+        private const val CH_ONGOING = "ongoing_min"
+        private const val CH_HITS = "hits_quiet"
         private const val ONGOING_ID = 1
+        private const val HIT_ID = 2
+        private const val HIT_COOLDOWN_MS = 30_000L
+        private const val STALE_MS = 5 * 60_000L
         private const val WIFI_INTERVAL_MS = 35_000L
         private const val CLASSIC_PAUSE_MS = 30_000L
         private val WIFI_KINDS = setOf("W")
@@ -326,6 +494,12 @@ class ScanService : Service() {
 
         fun stop(context: Context) {
             context.stopService(Intent(context, ScanService::class.java))
+        }
+
+        fun syncPromiscuous(context: Context) {
+            if (SightingBus.running.value) {
+                context.startService(Intent(context, ScanService::class.java).setAction(ACTION_SYNC_PROMISC))
+            }
         }
     }
 }

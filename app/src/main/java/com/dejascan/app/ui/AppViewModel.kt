@@ -8,36 +8,52 @@ import android.provider.OpenableColumns
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.compose.ui.graphics.toArgb
+import com.dejascan.app.data.DejaDb
 import com.dejascan.app.data.Device
 import com.dejascan.app.data.ObsRow
-import com.dejascan.app.data.SightPoint
-import com.dejascan.app.scan.SightingBus
-import kotlinx.coroutines.Job
-import com.dejascan.app.geo.CellGrid
-import com.dejascan.app.geo.Geo
-import com.dejascan.app.scan.MacUtil
-import com.dejascan.app.geo.Estimate
-import com.dejascan.app.geo.PositionEstimator
-import com.dejascan.app.geo.Sample
-import com.dejascan.app.data.DejaDb
 import com.dejascan.app.data.Prefs
+import com.dejascan.app.data.SightPoint
+import com.dejascan.app.data.Vendors
 import com.dejascan.app.data.WatchMode
 import com.dejascan.app.data.WigleImporter
+import com.dejascan.app.data.WigleMerger
+import com.dejascan.app.geo.CellGrid
+import com.dejascan.app.geo.Estimate
+import com.dejascan.app.geo.Geo
+import com.dejascan.app.geo.PositionEstimator
+import com.dejascan.app.geo.Sample
+import com.dejascan.app.scan.ChannelWidthHelper
+import com.dejascan.app.scan.DetectionClassifier
+import com.dejascan.app.scan.MacUtil
+import com.dejascan.app.scan.RootDetector
+import com.dejascan.app.scan.ScanService
+import com.dejascan.app.scan.Sighting
+import com.dejascan.app.scan.SightingBus
+import com.dejascan.app.scan.promiscuous.PrefsRestoreStateStore
+import com.dejascan.app.scan.promiscuous.PromiscuousMonitor
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val db = DejaDb(app)
     private val prefs = Prefs(app)
 
+    var isRooted by mutableStateOf(RootDetector.peekCached()); private set
+    var hasMergeBackup by mutableStateOf(latestBackupFile().let { it.isFile && it.length() > 0L }); private set
+    var promiscuousEnabled by mutableStateOf(prefs.promiscuousEnabled); private set
+    var promiscuousIface by mutableStateOf(prefs.promiscuousIface); private set
+    var promiscuousDriverSwitch by mutableStateOf(prefs.promiscuousDriverSwitch); private set
     var mode by mutableStateOf(prefs.mode); private set
     var types by mutableStateOf(prefs.types); private set
     var skipRandomised by mutableStateOf(prefs.skipRandomised); private set
+    var notifyHits by mutableStateOf(prefs.notifyHits); private set
     var query by mutableStateOf(""); private set
     var devices by mutableStateOf<List<Device>>(emptyList()); private set
     var total by mutableStateOf(0); private set
@@ -84,10 +100,51 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     init {
         mapFiles = scanMaps()
         viewModelScope.launch(Dispatchers.IO) {
+            val rooted = RootDetector.refresh()
+            withContext(Dispatchers.Main) { isRooted = rooted }
             if (db.count() > 0 && (!db.cellsReady() || (db.obsCount() > 0 && !db.linkedReady()))) indexCells()
+            if (rooted) PromiscuousMonitor(restoreStore = PrefsRestoreStateStore(prefs)).probeCapabilities()
         }
         refresh()
         refreshLinked(force = false)
+    }
+
+    fun changePromiscuousEnabled(enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val rooted = if (enabled) RootDetector.refresh() else RootDetector.peekCached()
+            val next = enabled && rooted
+            prefs.promiscuousEnabled = next
+            withContext(Dispatchers.Main) {
+                isRooted = rooted
+                promiscuousEnabled = next
+            }
+            if (next) {
+                PromiscuousMonitor(restoreStore = PrefsRestoreStateStore(prefs)).probeCapabilities()
+            }
+            withContext(Dispatchers.Main) {
+                ScanService.syncPromiscuous(getApplication())
+            }
+        }
+    }
+
+    fun changePromiscuousIface(iface: String) {
+        promiscuousIface = iface
+        prefs.promiscuousIface = iface
+        ScanService.syncPromiscuous(getApplication())
+    }
+
+    fun changePromiscuousDriverSwitch(allow: Boolean) {
+        promiscuousDriverSwitch = allow
+        prefs.promiscuousDriverSwitch = allow
+        ScanService.syncPromiscuous(getApplication())
+    }
+
+    fun probePromiscuousCapabilities() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val rooted = RootDetector.refresh()
+            withContext(Dispatchers.Main) { isRooted = rooted }
+            PromiscuousMonitor(restoreStore = PrefsRestoreStateStore(prefs)).probeCapabilities()
+        }
     }
 
     fun cycleTheme() {
@@ -96,13 +153,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun select(mac: String?) {
-        selectedMac = mac
-        if (mac == null) { selectedPlaces = emptyList(); selectedDevice = null; return }
+        val norm = if (mac == null) null else MacUtil.normalize(mac)
+        selectedMac = norm
+        if (norm == null) { selectedPlaces = emptyList(); selectedDevice = null; return }
         viewModelScope.launch(Dispatchers.IO) {
-            val dev = try { db.devices(listOf(mac)).firstOrNull() } catch (e: Exception) { null }
-            val places = try { collapsePlaces(db.placesOf(listOf(mac))[mac] ?: emptyList()) } catch (e: Exception) { emptyList() }
+            val dev = try { db.devices(listOf(norm)).firstOrNull() } catch (_: Exception) { null }
+            val places = try { collapsePlaces(db.placesOf(listOf(norm))[norm] ?: emptyList()) } catch (_: Exception) { emptyList() }
             withContext(Dispatchers.Main) {
-                if (selectedMac == mac) { selectedDevice = dev; selectedPlaces = places }
+                if (selectedMac == norm) { selectedDevice = dev; selectedPlaces = places }
             }
         }
     }
@@ -117,7 +175,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
         if (kept.size <= MAX_PLACES) return kept
-        // too many (a device that moves with me): keep the first and last and an even sample between
         return List(MAX_PLACES) { i -> kept[(i.toLong() * (kept.size - 1) / (MAX_PLACES - 1)).toInt()] }
     }
 
@@ -149,15 +206,44 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val now = System.currentTimeMillis()
             val phone = SightingBus.phone.value
             val dots = ArrayList<MapDot>()
-            val counts = try { db.sightCounts(now - LIVE_ESTIMATE_WINDOW_MS) } catch (e: Exception) { emptyMap() }
+            val counts = try { db.sightCounts(now - LIVE_ESTIMATE_WINDOW_MS) } catch (_: Exception) { emptyMap() }
+            val hasDb = total > 0
             val heard = SightingBus.sightings.value.values
                 .filter { now - it.time <= LIVE_MS }.sortedByDescending { it.rssi }.take(LIVE_DOT_LIMIT)
+            val fixedVendors = HashMap<String, Int>()
+            var fixedTotal = 0
             for (s in heard) {
-                val est = if ((counts[s.mac] ?: 0) >= 3) try { estimateCached(s.mac, now) } catch (e: Exception) { null } else null
-                val dev = Device(s.mac, s.name, s.type, s.wigleLastTime, s.lat, s.lon, s.randomised, false)
+                if (!s.randomised) {
+                    val v = Vendors.forMac(s.mac)
+                    if (!v.isNullOrBlank()) {
+                        fixedVendors[v] = (fixedVendors[v] ?: 0) + 1
+                        fixedTotal++
+                    }
+                }
+            }
+            for (s in heard) {
+                val est = if ((counts[s.mac] ?: 0) >= 3) try { estimateCached(s.mac, now) } catch (_: Exception) { null } else null
+                val vendor = Vendors.forMac(s.mac)
+                val cls = DetectionClassifier.classify(
+                    s = s,
+                    hasDatabase = hasDb,
+                    vendor = vendor,
+                    vendorPeerCount = if (vendor != null) (fixedVendors[vendor] ?: 0) else 0,
+                    totalFixedPeers = fixedTotal,
+                )
+                val rawCaps = s.adv.firstOrNull { it.startsWith("Raw Caps: ") }?.removePrefix("Raw Caps: ").orEmpty()
+                val dev = Device(s.mac, s.name, s.type, s.wigleLastTime, s.lat, s.lon, s.randomised, false, s.freq, rawCaps)
                 val dot = when {
-                    est != null -> MapDot(dev, true, false, s.rssi, est.lat, est.lon, est, s.watched)
-                    phone != null -> MapDot(dev, true, true, s.rssi, phone.lat, phone.lon, null, s.watched)
+                    est != null -> MapDot(
+                        device = dev, live = true, approx = false, rssi = s.rssi,
+                        lat = est.lat, lon = est.lon, estimate = est, watched = s.watched,
+                        category = cls.category, channelInfo = s.channelSummary,
+                    )
+                    phone != null -> MapDot(
+                        device = dev, live = true, approx = true, rssi = s.rssi,
+                        lat = phone.lat, lon = phone.lon, estimate = null, watched = s.watched,
+                        category = cls.category, channelInfo = s.channelSummary,
+                    )
                     else -> null
                 }
                 if (dot != null) dots.add(dot)
@@ -170,10 +256,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun loadWigle(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double, zoom: Int, types: Set<String>, linkedOnly: Boolean = false) {
         wigleJob?.cancel()
         wigleJob = viewModelScope.launch(Dispatchers.IO) {
+            val liveMap = SightingBus.sightings.value
+            val hasDb = total > 0
             val list = try {
                 if (zoom > CellGrid.BASE_Z && !linkedOnly) {
                     db.inBounds(minLat, maxLat, minLon, maxLon, types, WIGLE_DOT_LIMIT)
-                        .map { MapDot(it, false, false, 0, it.lat, it.lon, null) }
+                        .map { d ->
+                            val liveS = liveMap[d.mac]
+                            val cls = DetectionClassifier.classifyDevice(d, liveS, hasDatabase = hasDb)
+                            val chInfo = liveS?.channelSummary?.ifEmpty { null }
+                                ?: if (d.type == "W" && d.freq > 0) ChannelWidthHelper.formatChannelWidth(d.freq, -1, compact = true) else ""
+                            MapDot(
+                                device = d, live = false, approx = false, rssi = 0,
+                                lat = d.lat, lon = d.lon, estimate = null,
+                                category = cls.category, channelInfo = chInfo,
+                            )
+                        }
                 } else {
                     val z = zoom.coerceIn(CellGrid.MIN_Z, CellGrid.BASE_Z)
                     db.cellsInView(
@@ -182,20 +280,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         CellGrid.cell(CellGrid.ny(maxLat), z), CellGrid.cell(CellGrid.ny(minLat), z),
                         types, linkedOnly,
                     ).map { c ->
-                        val dev = Device(c.mac, "", c.type, 0L, c.lat, c.lon, false, false)
-                        MapDot(dev, false, false, 0, c.lat, c.lon, null, count = c.count)
+                        val rand = MacUtil.isRandomised(c.mac)
+                        val dev = Device(c.mac, "", c.type, 0L, c.lat, c.lon, rand, false)
+                        val cls = DetectionClassifier.classifyDevice(dev, liveMap[c.mac], hasDatabase = hasDb)
+                        MapDot(
+                            device = dev, live = false, approx = false, rssi = 0,
+                            lat = c.lat, lon = c.lon, estimate = null, count = c.count,
+                            category = cls.category,
+                        )
                     }
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 emptyList()
             }
             withContext(Dispatchers.Main) { wigleDots = list }
         }
     }
 
-    /** Dotted lines for every device in view that was seen in 2+ different places. */
     fun clearWigle() { wigleJob?.cancel(); if (wigleDots.isNotEmpty()) wigleDots = emptyList() }
 
+    /** Dotted lines for every device in view that was seen in 2+ different places. */
     fun loadLinks(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double, types: Set<String>) {
         linkMode = true
         linkLoading = true
@@ -240,7 +344,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val zone = java.time.ZoneId.systemDefault()
             val start = java.time.LocalDate.ofEpochDay(epochDay).atStartOfDay(zone).toInstant().toEpochMilli()
             val end = java.time.LocalDate.ofEpochDay(epochDay + 1).atStartOfDay(zone).toInstant().toEpochMilli()
-            val hits = try { db.hitsOnDay(start, end, DAY_HIT_LIMIT) } catch (e: Exception) { emptyList() }
+            val hits = try { db.hitsOnDay(start, end, DAY_HIT_LIMIT) } catch (_: Exception) { emptyList() }
             val macs = hits.map { it.mac }.distinct()
             val known = HashMap<String, Device>()
             for (chunk in macs.chunked(400)) db.devices(chunk).forEach { known[it.mac] = it }
@@ -258,7 +362,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Builds the pre-counted map cells (after an import, or the first time after an update). */
     private fun indexCells() {
         if (indexing) return
         indexing = true
@@ -280,16 +383,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Past places of one device: WiGLE observations and this app's own sightings. */
     fun loadTrail(mac: String?) {
+        val norm = if (mac == null) null else MacUtil.normalize(mac)
         viewModelScope.launch(Dispatchers.IO) {
-            val obs = if (mac == null) emptyList() else db.obsFor(mac, MAP_POINT_LIMIT)
-            val own = if (mac == null) emptyList() else db.sightsFor(mac, 0L, MAP_POINT_LIMIT)
+            val obs = if (norm == null) emptyList() else db.obsFor(norm, MAP_POINT_LIMIT)
+            val obsTimes = obs.mapTo(HashSet(obs.size)) { it.time }
+            val own = if (norm == null) emptyList() else db.sightsFor(norm, 0L, MAP_POINT_LIMIT).filter { it.time !in obsTimes }
             withContext(Dispatchers.Main) { trailObs = obs; trailOwn = own }
         }
     }
 
-    /** Box around every stored device with a known place: minLat, maxLat, minLon, maxLon. */
     suspend fun deviceBounds(): DoubleArray? = withContext(Dispatchers.IO) { db.bounds() }
 
     suspend fun device(mac: String): Device? = withContext(Dispatchers.IO) { db.devices(listOf(mac)).firstOrNull() }
@@ -300,7 +403,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return PositionEstimator.estimate(pts.map { Sample(it.lat, it.lon, it.rssi) })
     }
 
-    /** Position estimate from the last 24 h of this app's own sightings. */
     suspend fun estimate(mac: String): Estimate? = withContext(Dispatchers.IO) { estimateBlocking(mac) }
 
     fun clearSightings() {
@@ -323,7 +425,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return if (base.endsWith(".map")) base else "$base.map"
     }
 
-    /** Copies the chosen Mapsforge .map files into app storage; several files are combined on the map. */
     fun importMapFiles(uris: List<Uri>) {
         if (uris.isEmpty()) return
         mapStatus = "Copying ${uris.size} map file(s)..."
@@ -338,7 +439,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val input = getApplication<Application>().contentResolver.openInputStream(uri)
                         ?: throw IllegalStateException("cannot open $name")
                     input.use { i -> tmp.outputStream().use { o -> i.copyTo(o) } }
-                    val head = tmp.inputStream().use { it.readNBytes(MAP_MAGIC.length).toString(Charsets.US_ASCII) }
+                    val head = tmp.inputStream().use { s ->
+                        val buf = ByteArray(MAP_MAGIC.length)
+                        var off = 0
+                        while (off < buf.size) {
+                            val n = s.read(buf, off, buf.size - off)
+                            if (n <= 0) break
+                            off += n
+                        }
+                        String(buf, 0, off, Charsets.US_ASCII)
+                    }
                     if (head != MAP_MAGIC) throw IllegalStateException("$name is not a Mapsforge .map file")
                     val dest = File(dir, name)
                     dest.delete()
@@ -365,8 +475,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.Main) { mapFiles = list; mapStatus = "Removed $name" }
         }
     }
+
     fun changeHaptic(v: Boolean) { haptic = v; prefs.haptic = v }
     fun changeBeep(v: Boolean) { beep = v; prefs.beep = v }
+    fun changeNotifyHits(v: Boolean) { notifyHits = v; prefs.notifyHits = v }
 
     fun changeMode(m: WatchMode) { mode = m; prefs.mode = m }
     fun changeSkipRandomised(v: Boolean) { skipRandomised = v; prefs.skipRandomised = v }
@@ -380,7 +492,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleWatched(d: Device) {
         viewModelScope.launch(Dispatchers.IO) {
             db.setWatched(d.mac, !d.watched)
-            val list = db.search(query)
+            val list = if (query.isBlank()) db.watched() else db.search(query)
             withContext(Dispatchers.Main) {
                 devices = list
                 dayDevices = dayDevices.map { if (it.mac == d.mac) it.copy(watched = !d.watched) else it }
@@ -390,20 +502,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refresh() {
         viewModelScope.launch(Dispatchers.IO) {
-            val list = db.search(query)
+            val list = if (query.isBlank()) db.watched() else db.search(query)
             val n = db.count()
             withContext(Dispatchers.Main) { devices = list; total = n }
         }
     }
 
-    /** Remember a WiGLE file (kept readable across restarts) and import it. */
     fun linkFile(uri: Uri) {
+        val resolver = getApplication<Application>().contentResolver
         try {
-            getApplication<Application>().contentResolver
-                .takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        } catch (e: SecurityException) {
-            status = "Could not keep access to that file: ${e.message}"
-            return
+            resolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+        } catch (_: SecurityException) {
+            try {
+                resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e: SecurityException) {
+                status = "Could not keep access to that file: ${e.message}"
+                return
+            }
         }
         prefs.linkedUri = uri.toString()
         prefs.linkedModified = 0L
@@ -412,7 +530,274 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         refreshLinked(force = true)
     }
 
-    /** Re-imports the linked file if its modified time changed (or always when [force]). */
+    private fun backupDir() = File(getApplication<Application>().filesDir, "backups").apply { mkdirs() }
+    private fun latestBackupFile() = File(backupDir(), "wigle-pre-merge.sqlite")
+
+    fun suggestedMergedFileName(): String {
+        val base = prefs.linkedName.ifEmpty { "wiglewifi.sqlite" }
+            .removeSuffix(".sqlite").removeSuffix(".db")
+        return "$base-merged.sqlite"
+    }
+
+    private fun cleanSqliteTemp(base: File) {
+        base.delete()
+        File("${base.path}-wal").delete()
+        File("${base.path}-shm").delete()
+        File("${base.path}-journal").delete()
+    }
+
+    private fun writeFileToUriSafely(src: File, destUri: Uri) {
+        val resolver = getApplication<Application>().contentResolver
+        val outStream = try {
+            resolver.openOutputStream(destUri, "wt")
+        } catch (_: Exception) {
+            try {
+                resolver.openOutputStream(destUri, "rwt")
+            } catch (_: Exception) {
+                resolver.openOutputStream(destUri, "w")
+            }
+        } ?: throw IllegalStateException("Cannot open destination file for writing. Check write permissions.")
+
+        outStream.use { out ->
+            src.inputStream().use { inp -> inp.copyTo(out) }
+            out.flush()
+            if (out is FileOutputStream) {
+                runCatching { out.fd.sync() }
+            }
+        }
+    }
+
+    /**
+     * Copies the linked WiGLE database into a verified persistent backup (`filesDir/backups/wigle-pre-merge.sqlite`),
+     * runs the merge on an isolated temporary working file, and verifies `PRAGMA integrity_check` before any output write.
+     */
+    private fun buildVerifiedMergedFile(
+        sourceUri: Uri,
+        allSightings: Collection<Sighting>,
+        allSights: List<WigleMerger.SightRecord>,
+        workFile: File,
+    ): WigleMerger.Result {
+        val resolver = getApplication<Application>().contentResolver
+        val backupTmp = File(backupDir(), "wigle-pre-merge.sqlite.tmp")
+        cleanSqliteTemp(backupTmp)
+        try {
+            val input = resolver.openInputStream(sourceUri)
+                ?: throw IllegalStateException("Cannot open linked file for reading")
+            input.use { i -> backupTmp.outputStream().use { o -> i.copyTo(o); o.flush(); runCatching { o.fd.sync() } } }
+            WigleMerger.verifyIntegrity(backupTmp)
+
+            val backupDest = latestBackupFile()
+            val prevBackup = File(backupDir(), "wigle-pre-merge.sqlite.prev")
+            if (backupDest.exists()) {
+                prevBackup.delete()
+                backupDest.renameTo(prevBackup)
+            }
+            if (!backupTmp.renameTo(backupDest)) {
+                backupTmp.copyTo(backupDest, overwrite = true)
+                backupTmp.delete()
+            }
+            prevBackup.delete()
+        } finally {
+            cleanSqliteTemp(backupTmp)
+        }
+
+        cleanSqliteTemp(workFile)
+        latestBackupFile().copyTo(workFile, overwrite = true)
+        val res = WigleMerger.merge(workFile, allSightings, allSights) { m ->
+            viewModelScope.launch(Dispatchers.Main) { status = m }
+        }
+        WigleMerger.verifyIntegrity(workFile)
+        return res
+    }
+
+    private suspend fun updateLocalDbAfterMerge(
+        allSightings: Collection<Sighting>,
+        allSights: List<WigleMerger.SightRecord>,
+    ) {
+        val sightsByMac = allSights.groupBy { MacUtil.normalize(it.mac).orEmpty() }
+        val mergedDevices = allSightings.mapNotNull { s ->
+            val mac = MacUtil.normalize(s.mac) ?: return@mapNotNull null
+            val rec = WigleMerger.prepareNetworkRecord(s, sightsByMac[mac] ?: emptyList())
+            val loc = WigleImporter.pickLocation(rec.bestLat, rec.bestLon, rec.lastLat, rec.lastLon)
+            Device(
+                mac = mac,
+                name = MacUtil.cleanAirText(rec.ssid),
+                type = s.type,
+                lastTime = rec.lastTime,
+                lat = loc.first,
+                lon = loc.second,
+                randomised = s.randomised,
+                watched = s.watched,
+                freq = rec.frequency,
+                caps = rec.capabilities,
+            )
+        }
+        db.mergeDevicesBatch(mergedDevices.asSequence())
+
+        val combinedSights = WigleMerger.prepareCombinedSights(allSightings, allSights)
+        val obsRows = combinedSights.mapNotNull { sr ->
+            val mac = MacUtil.normalize(sr.mac) ?: return@mapNotNull null
+            if (!WigleImporter.validLocation(sr.lat, sr.lon)) return@mapNotNull null
+            ObsRow(mac, sr.time, sr.lat, sr.lon, sr.rssi)
+        }
+        db.insertObsBatch(obsRows)
+
+        try {
+            db.rebuildCells()
+            db.rebuildLinked()
+        } catch (_: Exception) {}
+
+        val known = db.filterKnown(SightingBus.sightings.value.keys)
+        withContext(Dispatchers.Main) {
+            SightingBus.markKnown(known)
+        }
+    }
+
+    /** Non-destructive merge: writes the verified merged WiGLE SQLite database to a newly chosen [destUri]. */
+    fun exportMergedToUri(destUri: Uri) {
+        val raw = prefs.linkedUri
+        if (raw.isEmpty()) {
+            status = "No file linked yet. Use Link WiGLE file."
+            return
+        }
+        if (busy) return
+        busy = true
+        status = "Building verified merged WiGLE copy..."
+        viewModelScope.launch(Dispatchers.IO) {
+            val sourceUri = Uri.parse(raw)
+            val workFile = File(getApplication<Application>().cacheDir, "merge-export.sqlite")
+            var msg: String
+            try {
+                val allSightings = SightingBus.sightings.value.values.toList()
+                val allSights = try { db.allSights() } catch (_: Exception) { emptyList() }
+                if (allSightings.isEmpty() && allSights.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        status = "No new sightings or locations to merge."
+                        busy = false
+                    }
+                    return@launch
+                }
+
+                val res = buildVerifiedMergedFile(sourceUri, allSightings, allSights, workFile)
+                writeFileToUriSafely(workFile, destUri)
+                updateLocalDbAfterMerge(allSightings, allSights)
+                val outName = queryMeta(destUri)?.first ?: "new file"
+                msg = "Saved verified merge to $outName: ${res.newNetworks} new, ${res.updatedNetworks} updated, ${res.newLocations} locations."
+            } catch (e: Exception) {
+                msg = "Export merge failed (original untouched): ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                cleanSqliteTemp(workFile)
+            }
+            prefs.lastImport = msg
+            val list = if (query.isBlank()) db.watched() else db.search(query)
+            val n = db.count()
+            val backupExists = latestBackupFile().let { it.isFile && it.length() > 0L }
+            withContext(Dispatchers.Main) {
+                hasMergeBackup = backupExists
+                status = msg
+                devices = list
+                total = n
+                busy = false
+                dataVersion++
+            }
+        }
+    }
+
+    /** Exports the preserved pre-merge backup copy (`wigle-pre-merge.sqlite`) to [destUri]. */
+    fun exportBackupToUri(destUri: Uri) {
+        val backup = latestBackupFile()
+        if (!backup.isFile || backup.length() <= 0L) {
+            status = "No pre-merge backup available yet."
+            return
+        }
+        if (busy) return
+        busy = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val msg = try {
+                WigleMerger.verifyIntegrity(backup)
+                writeFileToUriSafely(backup, destUri)
+                val outName = queryMeta(destUri)?.first ?: "backup file"
+                "Exported intact pre-merge backup to $outName."
+            } catch (e: Exception) {
+                "Backup export failed: ${e.message ?: e.javaClass.simpleName}"
+            }
+            withContext(Dispatchers.Main) {
+                status = msg
+                busy = false
+            }
+        }
+    }
+
+    fun mergeFindingsIntoLinked() {
+        val raw = prefs.linkedUri
+        if (raw.isEmpty()) {
+            status = "No file linked yet. Use Link WiGLE file."
+            return
+        }
+        if (busy) return
+        busy = true
+        status = "Backing up & merging findings..."
+        viewModelScope.launch(Dispatchers.IO) {
+            val uri = Uri.parse(raw)
+            val workFile = File(getApplication<Application>().cacheDir, "merge.sqlite")
+            var msg: String
+            try {
+                val allSightings = SightingBus.sightings.value.values.toList()
+                val allSights = try { db.allSights() } catch (_: Exception) { emptyList() }
+
+                if (allSightings.isEmpty() && allSights.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        status = "No new sightings or locations to merge."
+                        busy = false
+                    }
+                    return@launch
+                }
+
+                // 1. Save verified pre-merge backup + build & integrity-check merged temp SQLite BEFORE opening uri for write
+                val res = buildVerifiedMergedFile(uri, allSightings, allSights, workFile)
+
+                // 2. Stream verified SQLite back; on partial write failure, attempt rollback from backup
+                try {
+                    writeFileToUriSafely(workFile, uri)
+                } catch (writeErr: Exception) {
+                    val backup = latestBackupFile()
+                    val rolledBack = if (backup.isFile && backup.length() > 0L) {
+                        runCatching { writeFileToUriSafely(backup, uri); true }.getOrDefault(false)
+                    } else false
+                    val recoveryNote = if (rolledBack) {
+                        "Original restored from local backup."
+                    } else {
+                        "Intact backup kept in app storage (use Export backup)."
+                    }
+                    throw IllegalStateException("${writeErr.message ?: writeErr.javaClass.simpleName}. $recoveryNote", writeErr)
+                }
+
+                val meta = queryMeta(uri)
+                prefs.linkedModified = meta?.second ?: System.currentTimeMillis()
+
+                updateLocalDbAfterMerge(allSightings, allSights)
+
+                msg = "Merged into ${prefs.linkedName} (verified + backup kept): ${res.newNetworks} new, ${res.updatedNetworks} updated, ${res.newLocations} locations."
+            } catch (e: Exception) {
+                msg = "Merge failed: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                cleanSqliteTemp(workFile)
+            }
+            prefs.lastImport = msg
+            val list = if (query.isBlank()) db.watched() else db.search(query)
+            val n = db.count()
+            val backupExists = latestBackupFile().let { it.isFile && it.length() > 0L }
+            withContext(Dispatchers.Main) {
+                hasMergeBackup = backupExists
+                status = msg
+                devices = list
+                total = n
+                busy = false
+                dataVersion++
+            }
+        }
+    }
+
     fun refreshLinked(force: Boolean) {
         val raw = prefs.linkedUri
         if (raw.isEmpty()) {
@@ -433,7 +818,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private fun importLinked(uri: Uri, modified: Long) = runImport("linked file") { cache ->
         val input = try {
             getApplication<Application>().contentResolver.openInputStream(uri)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         } ?: return@runImport WigleImporter.Result.Error("Cannot open the linked file. Link it again.")
         input.use { i -> cache.outputStream().use { o -> i.copyTo(o) } }
@@ -450,7 +835,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         )?.use { c ->
             if (c.moveToFirst()) (c.getString(0) ?: "") to (if (c.isNull(1)) 0L else c.getLong(1)) else null
         }
-    } catch (e: Exception) {
+    } catch (_: Exception) {
         null
     }
 
@@ -462,7 +847,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val cache = File(getApplication<Application>().cacheDir, "import.sqlite")
             val msg = try {
                 when (val r = work(cache)) {
-                    is WigleImporter.Result.Ok -> "Imported ${r.imported} devices and ${r.observations} observations from $label (${r.skipped} skipped)"
+                    is WigleImporter.Result.Ok -> "Imported ${r.imported} devices and ${r.observations} observations (${r.skipped} skipped)"
                     is WigleImporter.Result.Error -> r.message
                 }
             } catch (e: Exception) {
@@ -473,9 +858,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             prefs.lastImport = msg
             if (msg.startsWith("Imported")) {
                 withContext(Dispatchers.Main) { status = "Indexing devices for the map..." }
-                try { db.rebuildCells(); db.rebuildLinked() } catch (e: Exception) { /* the map falls back to an empty overview */ }
+                try { db.rebuildCells(); db.rebuildLinked() } catch (_: Exception) {}
+                val known = db.filterKnown(SightingBus.sightings.value.keys)
+                withContext(Dispatchers.Main) { SightingBus.markKnown(known) }
             }
-            val list = db.search(query)
+            val list = if (query.isBlank()) db.watched() else db.search(query)
             val n = db.count()
             withContext(Dispatchers.Main) { status = msg; devices = list; total = n; busy = false; dataVersion++ }
         }

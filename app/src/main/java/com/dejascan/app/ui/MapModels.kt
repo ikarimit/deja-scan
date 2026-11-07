@@ -2,6 +2,7 @@ package com.dejascan.app.ui
 
 import com.dejascan.app.data.Device
 import com.dejascan.app.geo.Estimate
+import com.dejascan.app.scan.DetectionCategory
 
 /**
  * One dot on the map. Live dots are devices heard recently (at the estimated position, or approximately
@@ -18,6 +19,10 @@ data class MapDot(
     val watched: Boolean = true,
     /** More than 1 for a bubble that stands for several WiGLE devices. */
     val count: Int = 1,
+    /** Visual classification (Possible audit tool, WEP, Rare, Uncommon, Randomized, Normal). */
+    val category: DetectionCategory = DetectionCategory.NORMAL,
+    /** Compact Wi-Fi channel and bandwidth label (e.g. "Ch 36 • 80MHz"). */
+    val channelInfo: String = "",
 ) {
     val mac: String get() = device.mac
 }

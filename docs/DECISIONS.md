@@ -144,3 +144,93 @@
 - **Status:** accepted
 - **User chose:** private repository `deja-scan` under the user's GitHub account; MIT licence; manufacturer-name tables left out and rebuilt by a script (terms unconfirmed); commits use the GitHub noreply identity instead of the personal email in the git settings; re-download of the four public files approved to test the script.
 - **PII scrub:** local.properties (home path) and all build/db/map files excluded; searched the tree for the home path, email, phone serial, SD-card id, WiGLE backup file names, MAC addresses (only synthetic test values remain), IP addresses and place names; one country-specific map file mention generalised.
+
+## [D-027] 2026-11-02 — Wi-Fi 6 / 6E / 7 (6 GHz) & Channel Bandwidth Spectrum Scanning
+- **Status:** accepted
+- **Context:** User requested Wi-Fi 6, 6E, 7 (6 GHz) and Channel Bandwidth Spectrum scanning if supported by the device and not yet implemented.
+- **Implementation:**
+  - Device capability detection via `WifiManager.is5GHzBandSupported()`, `is6GHzBandSupported()`, and `isWifiStandardSupported()` for 802.11ax and 802.11be.
+  - ScanResult enrichment with channel width (20/40/80/160/320 MHz), center frequencies (`centerFreq0`, `centerFreq1`), and Wi-Fi standard.
+  - Spectrum live view upgraded with band selection (2.4 GHz, 5 GHz, 6 GHz), 6 GHz sub-band controls (U-NII-5 through 8), device support status chips, filter toggle (ALL/WATCHED), view toggle (CURVES/BARS), OFDM bandwidth curves with flat top and skirts, channel tick grid, and interactive AP row list.
+  - Graceful fallback when 6 GHz hardware is unsupported, with a clear hardware capability diagnosis.
+- **Applies to:** project
+
+## [D-028] 2026-11-03 — Passive Wi-Fi Security & WEP Notifications
+- **Status:** accepted
+- **Context:** User requested a passive way to notify when an AP has WEP or some sort of security issue.
+- **Design Choices:**
+  - Non-intrusive / passive delivery: zero alarms, zero audio chirps, zero buzzing.
+  - System level: Silent `NotificationChannel` (`IMPORTANCE_LOW`, silent, no vibration) for security advisories plus live updates to the ongoing foreground notification with WEP / Insecure count summaries. Auto-cancels when APs drop off after 5 minutes. Notification intent passes `EXTRA_SELECT_MAC` to focus the AP in `MainActivity`.
+  - In-App UI: `SecurityAdvisoryBanner` above Live views alerting to WEP/insecure APs with 1-tap "INSPECT", expandable list for multiple APs, and dismiss option; `RadarPanel` pulsing warning halos around WEP blips; `SpectrumPanel` and `BarsPanel` security badges (`[WEP ⚠️]`, `[OPEN ⚠️]`); `InfoPanel` comprehensive Security Advisory card explaining the cryptographic vulnerability and remediation.
+  - Issue model: `SecurityIssue` with severity (`CRITICAL` for broken WEP, `HIGH` for cleartext Open and WPS-PIN, `MEDIUM` for WPS-PBC and TKIP, `LOW` for Ad-hoc).
+- **Applies to:** project
+
+## [D-029] 2026-11-03 — Root Status Detection
+- **Status:** accepted
+- **Context:** User requested checking root / superuser status without breaking app stability or security.
+- **Design Choices:**
+  - Multi-vector detection checking:
+    1. OS Build tags for unofficial `test-keys`.
+    2. Existence of `su` binaries across 16 canonical system paths and modern root solutions (Magisk `/data/adb/magisk`, KernelSU `/data/adb/ksu`, APatch `/data/adb/ap`).
+    3. `PATH` environment directory inspection.
+    4. Execution test via `which su`.
+  - UI Header indicator: discreet `ROOT` (green) / `NON-ROOT` (muted) pill with instant tap-to-toast feedback explaining access state.
+- **Applies to:** project
+
+## [D-030] 2026-11-03 — WiGLE SQLite Database Merger
+- **Status:** accepted
+- **Context:** User requested merging newly discovered live findings back into the WiGLE SQLite backup file.
+- **Design Choices:**
+  - Two-way sync: Reads existing `network` and `location` tables from the linked WiGLE `.sqlite` file (via SAF persistent URI), prepares `NetworkRecord` and `SightRecord` instances from live `Sighting` objects, inserts or updates records with latest/best RSSI and coordinates, and safely writes the combined DB back.
+  - Local database update: Updates internal `device` and `obs` tables, rebuilds spatial map cell indexes, and updates `SightingBus` known-device cache so newly merged networks are recognized as known.
+  - Triggered via "Merge findings into WiGLE file" button on the Devices tab with status progress feedback.
+- **Applies to:** project
+
+## [D-031] 2026-11-03 — Network Counters, Density Tracker & Vendors Panel
+- **Status:** accepted
+- **Context:** User requested total network counter, new APs discovered count, vendor list, and rolling density metrics.
+- **Design Choices:**
+  - Top Summary Cards: `NetworkCountersBar` on the Live screen displaying Total Networks, New Discovered networks (unseen in WiGLE DB), and current rolling AP Density per minute (with session Peak).
+  - Tappable navigation shortcuts: Tapping Total Networks jumps directly to the Vendors view; tapping Density jumps directly to the Density history graph.
+  - Vendors Panel: Full-screen interactive breakdown grouping active devices by IEEE OUI / Bluetooth company IDs with monogram badges, radio distribution (Wi-Fi vs. BT), best RSSI, randomized MAC indicators, and tap-to-inspect drilldown.
+- **Applies to:** project
+
+## [D-032] 2026-11-05 — Merge Preparation: Remove Spectrum Analyzer, Condense UI, Minimize Notifications & 6-Tier Color Classification
+- **Status:** accepted (supersedes Spectrum UI in D-019/D-027 and system security notifications in D-028)
+- **Context:** User requested preparing the `testing` branch to merge into `main` by removing the Wi-Fi spectrum analyzer while keeping channel number + channel width across other tabs (such as Map), condensing/compartmentalizing the UI, minimizing notifications, and applying distinct color schemes for rarity, outdated WEP, potential attackers (Pwnagotchi, etc.), randomized MACs, and normal networks.
+- **Design Choices:**
+  - **Spectrum Analyzer Removal + Channel/Width Retention:** Removed `SpectrumPanel` (`LiveView.SPECTRUM`), kept `ChannelWidthHelper.formatChannelWidth` (`Ch X • YYMHz`), changed unknown `Sighting.channelWidth` default to `-1` (distinguishing unknown stored WiGLE records from `0` = `20 MHz`), and upgraded `DejaDb` to v7 (`freq`, `caps`) so channel and security details render across `Map`, `Devices`, `Live`, and `InfoPanel`.
+  - **6-Tier Detection Classification (`DetectionClassifier`):** Priority-ordered categories: `AUDIT_TOOL` (`#FF2A55`, `"Possible audit tool (heuristic)"` / `"AUDIT"`, documented as unverified heuristics in `C-014`), `WEP` (`#FF6D00`), `RARE` (`#FFD600`), `UNCOMMON` (`#00E5FF`), `RANDOMIZED` (`#B388FF`), and `NORMAL` (`#39FF88`).
+  - **UI Compartmentalization:** Consolidated Live into 4 views (`RADAR`, `SIGNALS`, `ACTIVITY`, `VENDORS`) with on-demand `DeviceDetails`; grouped `Devices` config into collapsible `Watch & Notification Rules` and `WiGLE Database Sync` cards; grouped `Map` toggles into a collapsible `LAYERS` menu.
+  - **Minimal Notifications:** Removed `CH_SECURITY` channel, lowered `CH_ONGOING` to `IMPORTANCE_MIN`, suppressed alerts while foregrounded (`SightingBus.inForeground`), and added a 30 s rate-limited single `HIT_ID` summary controlled by `Prefs.notifyHits`.
+- **Applies to:** project
+
+## [D-033] 2026-11-05 — Passive Root / Promiscuous Mode Groundwork, Ethical Disclaimer & Codebase Optimization
+- **Status:** accepted (extends D-021 & D-029)
+- **Context:** User requested laying compartmentalized groundwork for root/promiscuous mode up to what a rooted Android system can do passively (control frame extraction, hidden SSID unmasking, client station tracking), adding an explicit legal/ethical disclaimer that the app does not condone illegal activities, and optimizing code across the app (removing unused symbols and redundant `if/else` checks).
+- **Design Choices:**
+  - **Compartmentalized Package (`com.dejascan.app.scan.promiscuous`):**
+    - `Dot11FrameParser`: Zero-dependency libpcap stream reader (`DLT_IEEE802_11_RADIO`, `DLT_IEEE802_11`, `DLT_PRISM_HEADER`), Radiotap parser (extended bitmaps, channel MHz, dBm RSSI, `RADIOTAP_F_FCS` trim, `RADIOTAP_F_BADFCS` rejection), and IEEE 802.11 Management / Control / Data MAC header + IE parser. Payloads are never decoded.
+    - `PromiscuousTracker` & `PromiscuousBus`: Bounded, thread-safe `StateFlow<PromiscuousSnapshot>` tracking control frame tallies (`RTS`, `CTS`, `ACK`, `BlockAck`, `PS-Poll`), passive `Deauth`/`Disassoc` counts + reason codes, hidden SSID unmasking (`Beacon` hidden BSSID correlated with `Probe Response` / `Assoc Req` / `Reassoc Req`), and client stations (`ToDS`/`FromDS` data headers, `PS-Poll`, probe requests).
+    - `PromiscuousMonitor`: Safe, strictly passive `su` capability probe restricted to read-only system binary paths (`/system/bin`, `/system/xbin`, `/system_ext/bin`, `/product/bin`, `/vendor/bin`, `/sbin`) and tiered interface setup: (1) existing radiotap monitor netdev, (2) concurrent `iw` virtual monitor VIF `dejamon0` (`flags none`, preserving normal Wi-Fi), (3) secondary OTG adapter or opt-in Qualcomm `con_mode=4`, (4) `ip link promisc on` fallback, with synchronous `SharedPreferences` restore persistence so a crash or kill restores Wi-Fi on next start.
+  - **UI Integration:** Added `ActivitySubView.MONITOR` (`MonitorPanel`) inside `Live -> Activity`, `RootPromiscuousCard` + legal footer in `Devices`, `-- 802.11 MONITOR --` in `InfoPanel`, and `ROOT • MON` status in `Header`.
+  - **Ethical Boundary & Disclaimer:** Strictly receive-only (zero packet injection or deauth transmission); added `LEGAL_NOTICE_SHORT` in-app and a dedicated *Legal & Ethical Use Notice* section in `README.md`.
+  - **Dead-Code & Control-Flow Cleanup:** Removed unused fields/methods/constants across `Track`, `SightingBus`, `PositionEstimator`, `DejaDb`, `WifiSecurity`, `WifiSpectrum`, `Theme`, `Terminal`, `Widgets`, `VendorPanel`, `MapPanel`, `InfoPanel`, and `Screens`.
+- **Applies to:** project
+
+## [D-034] 2026-11-07 — Pre-Merge Safety, Security Hardening, Deduplication & Build Hygiene
+- **Status:** accepted
+- **Context:** Review of `testing` prior to merging into `main` flagged backup-loss risk during WiGLE merge, duplicate `obs` rows across merges, root execution from writable folders, unpersisted monitor-mode teardown, unverified `"Threat / Potential Attacker"` labels and `C-008` source status, undocumented build changes, and main-thread / input-cleaning issues.
+- **Design Choices:**
+  - **Safe WiGLE Merge (`AppViewModel`, `WigleMerger`):** Added `Save merged as new file` (`CreateDocument`) as the primary non-destructive export path, plus pre-merge backup (`filesDir/backups/wigle-pre-merge.sqlite`), isolated working temp file, `WigleMerger.verifyIntegrity` (`PRAGMA integrity_check`), rollback on write failure, and backup export.
+  - **Observation Deduplication (`DejaDb` v8):** Added `UNIQUE INDEX idx_obs_mac_time ON obs(mac, time)` with `INSERT OR IGNORE` and `NOT EXISTS` filtering across `placesOf`, `hitsOnDay`, and `loadTrail` so repeated merges never duplicate observations or link counts.
+  - **Root & Monitor Hardening (`PromiscuousMonitor`, `Prefs`, `DejaApplication`):** Removed writable paths (`/data/local/tmp`, Termux) from root binary discovery; persisted synchronous `promiscRestoreNeeded` metadata before modifying interfaces and automatically restored on next app start.
+  - **Fair Heuristic Labelling & Source Integrity (`DetectionClassifier`, `SOURCES.md`):** Renamed `ATTACKER` / `"THREAT"` to `AUDIT_TOOL` / `"Possible audit tool (heuristic)"` (`"AUDIT"`), scoped `"Flipper <name>"` heuristic to BT/BLE, added `C-014` (`UNVERIFIED`), and restored `C-008` to `UNVERIFIED`.
+  - **Build Toolchain:** Removed accidentally generated `gradle/gradle-daemon-jvm.properties` (JDK 25 Foojay download) while keeping and documenting the AGP `9.5.0 -> 9.5.1` patch bump.
+  - **Threading, API-Level & Unused-Code Hygiene:** Offloaded `ScanService.onHeard` SQLite lookups onto `io`, deferred `RootDetector` checks off the main thread in `AppViewModel` and `ScanService`, validated `EXTRA_SELECT_MAC` with `MacUtil.normalize`, cleaned over-the-air SSIDs/names/capabilities with `MacUtil.cleanAirText`, replaced API-33 `readNBytes` in `AppViewModel.importMapFiles`, and pruned remaining unused getters, helpers, fields, imports, and XML resources.
+- **Applies to:** project
+- **Sources:** C-004, C-008, C-014
+
+
+
+

@@ -38,8 +38,8 @@
 - **Accessed:** 2026-10-29
 - **Tier:** 1
 - **Why used:** Pick library versions. `release` tags point to alpha/beta (AGP 9.6.0-alpha02, Kotlin 2.5.0-Beta2); stable versions not yet chosen.
-- **Where used:** app/build.gradle.kts, build.gradle.kts (AGP 9.5.0, Kotlin 2.4.21, Compose BOM 2026.09.00, activity-compose 1.13.0, lifecycle-viewmodel-compose 2.11.0)
-- **Verification:** Versions confirmed by successful build 2026-10-29. Build also required compileSdk 37 (Gradle error message).
+- **Where used:** app/build.gradle.kts, build.gradle.kts (AGP 9.5.1 — bumped from 9.5.0 in `testing`, Kotlin 2.4.21, Compose BOM 2026.09.00, activity-compose 1.13.0, lifecycle-viewmodel-compose 2.11.0)
+- **Verification:** Versions confirmed by successful build 2026-10-29 (AGP 9.5.1 patch confirmed 2026-11-05). Build also required compileSdk 37 (Gradle error message).
 
 ## [C-005] Foreground service types
 - **Publisher / author:** Android Developers
@@ -78,9 +78,9 @@
 - **URL / location:** not consulted
 - **Accessed:** 2026-10-30
 - **Tier:** 1 (intended)
-- **Why used:** channelFor() in scan/Track.kt uses centre frequency = 2407+5n (2.4 GHz), 5000+5n (5 GHz), 5950+5n (6 GHz), plus ch14 = 2484 MHz.
-- **Where used:** app/src/main/java/com/dejascan/app/scan/Track.kt
-- **Verification:** UNVERIFIED — written from prior knowledge, not checked against the standard or Android docs. Unit-tested only against the same formulas. 5 GHz and 6 GHz channel numbers overlap and are not told apart.
+- **Why used:** channelFor() in scan/Track.kt and band/channel helpers in scan/WifiSpectrum.kt use centre frequency = 2407+5n (2.4 GHz), 5000+5n (5 GHz), 5950+5n (6 GHz), plus ch14 = 2484 MHz.
+- **Where used:** app/src/main/java/com/dejascan/app/scan/Track.kt, app/src/main/java/com/dejascan/app/scan/WifiSpectrum.kt
+- **Verification:** UNVERIFIED — written from prior knowledge, not checked against the IEEE 802.11 standard or Android docs. Unit-tested only against the same formulas. (`channelFor()` itself does not tell overlapping 5 GHz and 6 GHz channel numbers apart; `WifiBand.forFrequency()` / `ChannelWidthHelper` append the band label in UI text.)
 
 ## [C-009] Mapsforge (library, licence, map providers)
 - **Publisher / author:** mapsforge project
@@ -130,3 +130,13 @@
 - **Why used:** osmdroid 6.1.20 (2024-08-18), mapsforge 0.25.0 (2025-04-04), MapLibre 2026.10.19-globe.
 - **Where used:** chat answer 2026-10-30: map options
 - **Verification:** Build resolved the Mapsforge 0.25.0 artifacts.
+
+## [C-014] Wireless audit-tool heuristics (Pwnagotchi, WiFi Pineapple, Flipper Zero, Marauder, Deauther)
+- **Publisher / author:** Upstream open-source firmware / hardware projects (evilsocket/pwnagotchi, flipperdevices/flipperzero-firmware, justcallmekoko/ESP32Marauder, SpacehuhnTech/esp8266_deauther, Hak5)
+- **URL / location:** not consulted directly
+- **Accessed:** 2026-11-05
+- **Tier:** 2 (intended; community / vendor conventions, not IEEE / Bluetooth SIG standards)
+- **Why used:** Heuristic patterns in `DetectionClassifier.kt` (`de:ad:be:ef:de:ad` peer MAC, `00:13:37` prefix, BLE 16-bit GATT service UUIDs `0x3081`–`0x3083`, `Flipper <Name>` BT/BLE names, and tool name substrings).
+- **Where used:** app/src/main/java/com/dejascan/app/scan/DetectionClassifier.kt
+- **Verification:** UNVERIFIED — compiled from prior knowledge rather than verified against upstream source repositories or assigned-number registries.
+- **Notes:** False positives are possible on ordinary devices: `00:13:37` is a real IEEE OUI block assigned to commercial hardware, BLE 16-bit UUIDs or `"Flipper <name>"` strings can be advertised by unrelated devices, and SSIDs/names are user-chosen. Category is therefore labelled `"Possible audit tool (heuristic)"` (`AUDIT`) rather than `"Threat / Potential Attacker"`.

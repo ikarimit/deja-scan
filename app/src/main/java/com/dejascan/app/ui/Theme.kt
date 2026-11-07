@@ -19,21 +19,15 @@ fun ThemeMode.isDark(): Boolean = when (this) {
     ThemeMode.DARK -> true
 }
 
-/** Extra colours beyond Material's scheme: signal strength levels and radar grid. */
+/** Extra status dot colours beyond Material's scheme. */
 @Immutable
 class DejaColors(
     val strong: Color,
-    val mid: Color,
     val weak: Color,
-    val grid: Color,
 )
 
-private val DarkDeja = DejaColors(
-    strong = Color(0xFF2BFF88), mid = Color(0xFFFFC53D), weak = Color(0xFF7C8F84), grid = Color(0xFF1F3A2A),
-)
-private val LightDeja = DejaColors(
-    strong = Color(0xFF00794A), mid = Color(0xFFB8860B), weak = Color(0xFF7C8F84), grid = Color(0xFFBFD6C8),
-)
+private val DarkDeja = DejaColors(strong = Color(0xFF2BFF88), weak = Color(0xFF7C8F84))
+private val LightDeja = DejaColors(strong = Color(0xFF00794A), weak = Color(0xFF7C8F84))
 
 val LocalDejaColors = staticCompositionLocalOf { DarkDeja }
 
