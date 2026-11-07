@@ -33,9 +33,12 @@ import com.dejascan.app.data.DejaDb
 import com.dejascan.app.data.Device
 import com.dejascan.app.data.Prefs
 import com.dejascan.app.data.Vendors
+import com.dejascan.app.scan.promiscuous.PrefsRestoreStateStore
 import com.dejascan.app.scan.promiscuous.PromiscuousBus
 import com.dejascan.app.scan.promiscuous.PromiscuousMonitor
+import com.dejascan.app.scan.promiscuous.PromiscuousTracker
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 /**
  * Foreground service that listens for Wi-Fi, BLE, Bluetooth Classic, and (when rooted & enabled)
@@ -48,43 +51,13 @@ class ScanService : Service() {
 
     private lateinit var db: DejaDb
     private lateinit var prefs: Prefs
+    private lateinit var promiscMonitor: PromiscuousMonitor
     private val handler = Handler(Looper.getMainLooper())
     private val approach = ApproachTracker()
     private val io = Executors.newSingleThreadExecutor()
     private val lastSave = HashMap<String, Long>()
     private var lastHitNotifyMs = 0L
     private var locMgr: LocationManager? = null
-
-    private val promiscMonitor = PromiscuousMonitor { ev ->
-        val bssid = ev.apBssid ?: return@PromiscuousMonitor
-        // Throttle passive beacon reports unless an SSID was newly unmasked or unseen
-        val existing = SightingBus.sightings.value[bssid]
-        val now = System.currentTimeMillis()
-        if (!ev.unmaskedNow && existing != null && now - existing.time < 2_500L) return@PromiscuousMonitor
-        handler.post {
-            if (!SightingBus.running.value) return@post
-            val adv = buildList {
-                if (!ev.apSsid.isNullOrEmpty()) add("SSID: ${ev.apSsid}")
-                if (ev.unmaskedNow && !ev.apSsid.isNullOrEmpty()) {
-                    add("Unmasked SSID: ${ev.apSsid} (via ${ev.unmaskMethod})")
-                }
-            }
-            val suite = when {
-                existing != null && existing.securitySuite != SecuritySuite.UNKNOWN -> existing.securitySuite
-                !ev.privacyBit && ev.freqMhz > 0 -> SecuritySuite.OPEN
-                else -> SecuritySuite.UNKNOWN
-            }
-            onHeard(
-                rawMac = bssid,
-                kinds = WIFI_KINDS,
-                rssi = ev.rssi,
-                liveName = ev.apSsid.orEmpty(),
-                freq = ev.freqMhz,
-                adv = adv,
-                securitySuite = suite,
-            )
-        }
-    }
 
     private val locListener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
@@ -140,7 +113,8 @@ class ScanService : Service() {
 
     private val bleCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            onHeard(result.device.address, BT_KINDS, result.rssi, result.scanRecord?.deviceName.orEmpty(), 0, bleAdv(result))
+            val cleanName = MacUtil.cleanAirText(result.scanRecord?.deviceName)
+            onHeard(result.device.address, BT_KINDS, result.rssi, cleanName, 0, bleAdv(result, cleanName))
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -152,8 +126,41 @@ class ScanService : Service() {
         super.onCreate()
         db = DejaDb(this)
         prefs = Prefs(this)
+        promiscMonitor = PromiscuousMonitor(
+            restoreStore = PrefsRestoreStateStore(prefs),
+            onIngestEvent = ::onPromiscuousEvent,
+        )
         wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         btAdapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+    }
+
+    private fun onPromiscuousEvent(ev: PromiscuousTracker.IngestEvent) {
+        val bssid = ev.apBssid ?: return
+        if (!SightingBus.running.value) return
+        val existing = SightingBus.sightings.value[bssid]
+        val now = System.currentTimeMillis()
+        if (!ev.unmaskedNow && existing != null && now - existing.time < 2_500L) return
+        val cleanSsid = MacUtil.cleanAirText(ev.apSsid, maxLen = 32)
+        val adv = buildList {
+            if (cleanSsid.isNotEmpty()) add("SSID: $cleanSsid")
+            if (ev.unmaskedNow && cleanSsid.isNotEmpty()) {
+                add("Unmasked SSID: $cleanSsid (via ${ev.unmaskMethod})")
+            }
+        }
+        val suite = when {
+            existing != null && existing.securitySuite != SecuritySuite.UNKNOWN -> existing.securitySuite
+            !ev.privacyBit && ev.freqMhz > 0 -> SecuritySuite.OPEN
+            else -> SecuritySuite.UNKNOWN
+        }
+        onHeard(
+            rawMac = bssid,
+            kinds = WIFI_KINDS,
+            rssi = ev.rssi,
+            liveName = cleanSsid,
+            freq = ev.freqMhz,
+            adv = adv,
+            securitySuite = suite,
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -174,7 +181,8 @@ class ScanService : Service() {
     }
 
     private fun syncPromiscuousMode() {
-        if (prefs.promiscuousEnabled && RootDetector.isRooted) {
+        if (prefs.promiscuousEnabled) {
+            // PromiscuousMonitor verifies root status asynchronously on its own worker thread
             promiscMonitor.start(prefs.promiscuousIface, prefs.promiscuousDriverSwitch)
         } else {
             promiscMonitor.stop()
@@ -238,15 +246,17 @@ class ScanService : Service() {
         val results = try { wifi?.scanResults } catch (_: SecurityException) { null } ?: return
         val unmaskedMap = PromiscuousBus.snapshot.value.unmasked
         for (r in results) {
-            @Suppress("DEPRECATION") val rawSsid = r.SSID.orEmpty()
+            @Suppress("DEPRECATION") val rawSsid = MacUtil.cleanAirText(r.SSID, maxLen = 32)
             val normBssid = MacUtil.normalize(r.BSSID)
             if (normBssid != null) {
                 PromiscuousBus.tracker.noteKnownAp(normBssid, rawSsid.isEmpty())
             }
             val unmasked = normBssid?.let(unmaskedMap::get)
-            val ssid = rawSsid.ifEmpty { unmasked?.ssid.orEmpty() }
+            val cleanUnmasked = MacUtil.cleanAirText(unmasked?.ssid, maxLen = 32)
+            val ssid = rawSsid.ifEmpty { cleanUnmasked }
 
-            val sec = WifiSecurity.parse(r.capabilities)
+            val cleanCaps = MacUtil.cleanAirText(r.capabilities, maxLen = 256)
+            val sec = WifiSecurity.parse(cleanCaps)
             val channelWidth = r.channelWidth
             val centerFreq0 = r.centerFreq0
             val rawStandard = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) r.wifiStandard else 0
@@ -258,8 +268,8 @@ class ScanService : Service() {
 
             val adv = buildList {
                 add("SSID: ${ssid.ifEmpty { "(hidden)" }}")
-                if (unmasked != null && rawSsid.isEmpty()) {
-                    add("Unmasked SSID: ${unmasked.ssid} (via ${unmasked.source})")
+                if (unmasked != null && cleanUnmasked.isNotEmpty() && rawSsid.isEmpty()) {
+                    add("Unmasked SSID: $cleanUnmasked (via ${unmasked.source})")
                 }
                 add("Channel: ${channelFor(r.frequency)} • $widthLabel (${r.frequency} MHz, ${band.label})")
                 if (stdLabel.isNotEmpty() && stdLabel != "Unknown standard") add("Standard: $stdLabel")
@@ -306,52 +316,61 @@ class ScanService : Service() {
         rawCaps: String = "",
     ) {
         val mac = MacUtil.normalize(rawMac) ?: return
-        val matched = db.match(mac, kinds, prefs.filter())
-        val inDbDev = matched ?: db.devices(listOf(mac)).firstOrNull()
-        val dev = inDbDev ?: Device(
-            mac = mac, name = "", type = kinds.first(), lastTime = 0L, lat = 0.0, lon = 0.0,
-            randomised = MacUtil.isRandomised(mac), watched = false, freq = freq, caps = rawCaps,
-        )
+        val cleanName = MacUtil.cleanAirText(liveName)
         val now = System.currentTimeMillis()
-        SightingBus.report(
-            dev = dev,
-            liveName = liveName,
-            rssi = rssi,
-            freq = freq,
-            adv = adv,
-            now = now,
-            watched = matched != null,
-            inDatabase = inDbDev != null,
-            securitySuite = securitySuite,
-            channelWidth = channelWidth,
-            centerFreq0 = centerFreq0,
-            wifiStandard = wifiStandard,
-            standardLabel = standardLabel,
-        )
-        if (rssi <= -100) return
-        val fix = SightingBus.phone.value
-        val every = if (matched != null) 5_000L else 30_000L
-        if (fix != null && now - fix.time < 15_000 && fix.acc <= 50f && now - (lastSave[mac] ?: 0L) >= every) {
-            lastSave[mac] = now
-            io.execute { db.addSight(mac, now, fix.lat, fix.lon, fix.acc, rssi) }
-        }
-        if (matched != null && approach.onReading(mac, rssi, now)) {
-            if (!SightingBus.inForeground.value && prefs.notifyHits && now - lastHitNotifyMs >= HIT_COOLDOWN_MS) {
-                lastHitNotifyMs = now
-                val name = dev.name.ifEmpty { liveName }.ifEmpty { mac }
-                val activeWatched = SightingBus.sightings.value.values.count { it.watched && now - it.time <= STALE_MS }
-                getSystemService(NotificationManager::class.java)
-                    ?.notify(HIT_ID, hitNotification(name, mac, rssi, activeWatched))
+        try {
+            io.execute {
+                if (!SightingBus.running.value) return@execute
+                val filter = prefs.filter()
+                val matched = db.match(mac, kinds, filter)
+                val inDbDev = matched ?: db.devices(listOf(mac)).firstOrNull()
+                val dev = inDbDev ?: Device(
+                    mac = mac, name = "", type = kinds.first(), lastTime = 0L, lat = 0.0, lon = 0.0,
+                    randomised = MacUtil.isRandomised(mac), watched = false, freq = freq, caps = rawCaps,
+                )
+                SightingBus.report(
+                    dev = dev,
+                    liveName = cleanName,
+                    rssi = rssi,
+                    freq = freq,
+                    adv = adv,
+                    now = now,
+                    watched = matched != null,
+                    inDatabase = inDbDev != null,
+                    securitySuite = securitySuite,
+                    channelWidth = channelWidth,
+                    centerFreq0 = centerFreq0,
+                    wifiStandard = wifiStandard,
+                    standardLabel = standardLabel,
+                )
+                if (rssi <= -100) return@execute
+                val fix = SightingBus.phone.value
+                val every = if (matched != null) 5_000L else 30_000L
+                if (fix != null && now - fix.time < 15_000 && fix.acc <= 50f && now - (lastSave[mac] ?: 0L) >= every) {
+                    lastSave[mac] = now
+                    db.addSight(mac, now, fix.lat, fix.lon, fix.acc, rssi)
+                }
+                if (matched != null && approach.onReading(mac, rssi, now)) {
+                    if (!SightingBus.inForeground.value && prefs.notifyHits && now - lastHitNotifyMs >= HIT_COOLDOWN_MS) {
+                        lastHitNotifyMs = now
+                        val name = MacUtil.cleanAirText(dev.name.ifEmpty { cleanName }).ifEmpty { mac }
+                        val activeWatched = SightingBus.sightings.value.values.count { it.watched && now - it.time <= STALE_MS }
+                        getSystemService(NotificationManager::class.java)
+                            ?.notify(HIT_ID, hitNotification(name, mac, rssi, activeWatched))
+                    }
+                }
             }
+        } catch (_: RejectedExecutionException) {
+            // Service shutting down
         }
     }
 
     private fun shortUuid(u: String): String =
         if (u.startsWith("0000") && u.endsWith("-0000-1000-8000-00805f9b34fb")) "0x" + u.substring(4, 8) else u
 
-    private fun bleAdv(r: ScanResult): List<String> = buildList {
+    private fun bleAdv(r: ScanResult, cleanName: String): List<String> = buildList {
         val rec = r.scanRecord
-        rec?.deviceName?.let { add("Name: $it") }
+        if (cleanName.isNotEmpty()) add("Name: $cleanName")
         rec?.serviceUuids?.takeIf { it.isNotEmpty() }?.let { l ->
             add("Services: " + l.joinToString { shortUuid(it.uuid.toString()) })
         }
@@ -371,7 +390,8 @@ class ScanService : Service() {
         emptyList()
     }
 
-    private fun safeName(d: BluetoothDevice): String = try { d.name.orEmpty() } catch (_: SecurityException) { "" }
+    private fun safeName(d: BluetoothDevice): String =
+        try { MacUtil.cleanAirText(d.name) } catch (_: SecurityException) { "" }
 
     private fun has(p: String) = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
 
@@ -438,6 +458,7 @@ class ScanService : Service() {
     }
 
     override fun onDestroy() {
+        SightingBus.running.value = false
         handler.removeCallbacksAndMessages(null)
         promiscMonitor.release()
         if (receiversRegistered) runCatching { unregisterReceiver(receiver) }
@@ -446,9 +467,8 @@ class ScanService : Service() {
         runCatching { locMgr?.removeUpdates(locListener) }
         runCatching { getSystemService(NotificationManager::class.java)?.cancel(HIT_ID) }
         SightingBus.phone.value = null
-        io.execute { db.close() }
+        runCatching { io.execute { db.close() } }
         io.shutdown()
-        SightingBus.running.value = false
         super.onDestroy()
     }
 

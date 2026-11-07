@@ -34,12 +34,7 @@ data class Sighting(
     /** Human-readable Wi-Fi standard label (e.g. "Wi-Fi 6E (802.11ax 6 GHz)"). */
     val standardLabel: String = "",
 ) {
-    val wifiBand: WifiBand get() = WifiBand.forFrequency(freq)
-    val bandwidthMhz: Int get() = ChannelWidthHelper.getWidthMhz(channelWidth)
-    val bandwidthLabel: String get() = ChannelWidthHelper.getWidthLabel(channelWidth)
-    val centerFreq: Int get() = ChannelWidthHelper.getCenterFreq(freq, centerFreq0)
     val frequencySpan: IntRange get() = ChannelWidthHelper.getFrequencySpan(freq, channelWidth, centerFreq0)
-    val standardBadge: String get() = WifiStandardHelper.getStandardBadge(wifiStandard, freq)
     val channelSummary: String get() = if (type == "W" && freq > 0) ChannelWidthHelper.formatChannelWidth(freq, channelWidth, compact = true) else ""
     val channelDetail: String get() = if (type == "W" && freq > 0) ChannelWidthHelper.formatChannelWidth(freq, channelWidth, compact = false) else ""
 
@@ -47,12 +42,7 @@ data class Sighting(
         WifiSecurity.fromAdv(adv) ?: securitySuite.takeIf { it != SecuritySuite.UNKNOWN }?.let(WifiSecurity::fromSuite)
     } else null
 
-    val securityIssues: List<SecurityIssue> get() = parsedCapabilities?.securityIssues.orEmpty()
-    val isWep: Boolean get() = securitySuite == SecuritySuite.WEP || parsedCapabilities?.suite == SecuritySuite.WEP
     val isOpen: Boolean get() = (securitySuite == SecuritySuite.OPEN || parsedCapabilities?.suite == SecuritySuite.OPEN) && securitySuite != SecuritySuite.OWE
-    val hasSecurityIssue: Boolean get() = securityIssues.isNotEmpty()
-    val hasCriticalSecurityIssue: Boolean get() = securityIssues.any { it.severity == SecurityIssueSeverity.CRITICAL }
-    val primarySecurityIssue: SecurityIssue? get() = securityIssues.minByOrNull { it.severity.ordinal }
 }
 
 enum class Trend { APPROACHING, LEAVING, STEADY }

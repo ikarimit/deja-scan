@@ -34,7 +34,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
@@ -93,6 +92,8 @@ fun DejaApp(
     onRequestBackground: () -> Unit,
     onPickFile: () -> Unit,
     onPickMap: () -> Unit,
+    onExportMerged: () -> Unit = {},
+    onExportBackup: () -> Unit = {},
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val navColors = NavigationBarItemDefaults.colors(
@@ -130,7 +131,7 @@ fun DejaApp(
         Box(content.fillMaxSize()) {
             when (tab) {
                 0 -> LiveScreen(vm, onToggleScan, hasBackgroundPermission, onRequestBackground)
-                1 -> DevicesScreen(vm, onPickFile)
+                1 -> DevicesScreen(vm, onPickFile, onExportMerged, onExportBackup)
                 else -> MapTab(vm, onPickMap)
             }
         }
@@ -378,7 +379,7 @@ private fun LiveScreen(
                 MText(message, color = MaterialTheme.colorScheme.error, size = 10.5.sp)
             }
 
-            // Condensed Telemetry & Detection Rarity/Threat Strip
+            // Condensed Telemetry & Detection Category Strip
             DejaCard {
                 Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -408,7 +409,7 @@ private fun LiveScreen(
                                 if (c > 0) {
                                     CategoryPill(cat, c) {
                                         signalFilter = when (cat) {
-                                            DetectionCategory.ATTACKER, DetectionCategory.WEP -> SignalFilter.ALERTS
+                                            DetectionCategory.AUDIT_TOOL, DetectionCategory.WEP -> SignalFilter.ALERTS
                                             DetectionCategory.RARE, DetectionCategory.UNCOMMON -> SignalFilter.RARE
                                             DetectionCategory.RANDOMIZED -> SignalFilter.RAND
                                             DetectionCategory.NORMAL -> SignalFilter.ALL
@@ -567,9 +568,13 @@ private fun countByCategory(
     return map
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DevicesScreen(vm: AppViewModel, onPickFile: () -> Unit) {
+private fun DevicesScreen(
+    vm: AppViewModel,
+    onPickFile: () -> Unit,
+    onExportMerged: () -> Unit,
+    onExportBackup: () -> Unit,
+) {
     val deja = LocalDejaColors.current
     val sightings by SightingBus.sightings.collectAsState()
     val ready by Vendors.ready.collectAsState()
@@ -706,11 +711,29 @@ private fun DevicesScreen(vm: AppViewModel, onPickFile: () -> Unit) {
                         }
                         Button(
                             enabled = !vm.busy && vm.linkedName.isNotEmpty(),
-                            onClick = { vm.mergeFindingsIntoLinked() },
+                            onClick = onExportMerged,
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Text(if (newFindings > 0) "Merge findings into WiGLE ($newFindings new)" else "Merge findings into WiGLE")
+                            Text(if (newFindings > 0) "Save merged as new file ($newFindings new)" else "Save merged as new file")
+                        }
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(
+                                enabled = !vm.busy && vm.linkedName.isNotEmpty(),
+                                onClick = { vm.mergeFindingsIntoLinked() },
+                                shape = RoundedCornerShape(10.dp),
+                            ) {
+                                Text("Overwrite linked (keeps backup)")
+                            }
+                            if (vm.hasMergeBackup) {
+                                OutlinedButton(
+                                    enabled = !vm.busy,
+                                    onClick = onExportBackup,
+                                    shape = RoundedCornerShape(10.dp),
+                                ) {
+                                    Text("Export backup")
+                                }
+                            }
                         }
                         if (vm.status.isNotEmpty()) {
                             Text(vm.status, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)

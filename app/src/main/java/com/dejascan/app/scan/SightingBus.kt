@@ -35,6 +35,7 @@ object SightingBus {
         standardLabel: String = "",
     ) {
         val isKnown = inDatabase || dev.lastTime > 0L
+        val cleanLiveName = MacUtil.cleanAirText(liveName)
         densityTracker.record(dev.mac, dev.type, isKnown, now)
         sightings.update { map ->
             val prev = map[dev.mac]
@@ -45,7 +46,7 @@ object SightingBus {
                 hist = (hist + Reading(now, effectiveRssi)).filter { now - it.time <= HISTORY_MS }.takeLast(MAX_POINTS)
             }
             val prevResolvedName = prev?.name?.takeUnless { it.equals(dev.mac, ignoreCase = true) }.orEmpty()
-            val resolvedName = dev.name.ifEmpty { liveName }.ifEmpty { prevResolvedName }.ifEmpty { dev.mac }
+            val resolvedName = dev.name.ifEmpty { cleanLiveName }.ifEmpty { prevResolvedName }.ifEmpty { dev.mac }
             val mergedAdv = when {
                 adv.isEmpty() -> prev?.adv.orEmpty()
                 prev != null -> {

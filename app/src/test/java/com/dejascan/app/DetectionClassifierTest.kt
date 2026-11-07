@@ -13,14 +13,18 @@ import org.junit.Test
 class DetectionClassifierTest {
 
     @Test
-    fun testPotentialAttackersDetected() {
+    fun testHeuristicAuditToolsDetected() {
+        assertEquals("Possible audit tool (heuristic)", DetectionCategory.AUDIT_TOOL.label)
+        assertEquals("AUDIT", DetectionCategory.AUDIT_TOOL.shortTag)
+
         val pwnagotchi = DetectionClassifier.classifyRaw(
             mac = "DE:AD:BE:EF:DE:AD",
             name = "unit-01",
             type = "W",
             randomised = true,
         )
-        assertEquals(DetectionCategory.ATTACKER, pwnagotchi.category)
+        assertEquals(DetectionCategory.AUDIT_TOOL, pwnagotchi.category)
+        assertTrue(pwnagotchi.reason.contains("heuristic"))
 
         val pwnName = DetectionClassifier.classifyRaw(
             mac = "B8:27:EB:11:22:33",
@@ -28,7 +32,7 @@ class DetectionClassifierTest {
             type = "W",
             randomised = false,
         )
-        assertEquals(DetectionCategory.ATTACKER, pwnName.category)
+        assertEquals(DetectionCategory.AUDIT_TOOL, pwnName.category)
 
         val pineapple = DetectionClassifier.classifyRaw(
             mac = "00:13:37:A1:B2:C3",
@@ -36,7 +40,8 @@ class DetectionClassifierTest {
             type = "W",
             randomised = false,
         )
-        assertEquals(DetectionCategory.ATTACKER, pineapple.category)
+        assertEquals(DetectionCategory.AUDIT_TOOL, pineapple.category)
+        assertTrue(pineapple.reason.contains("assigned OUI"))
 
         val flipperName = DetectionClassifier.classifyRaw(
             mac = "80:E1:26:01:02:03",
@@ -44,7 +49,19 @@ class DetectionClassifierTest {
             type = "E",
             randomised = false,
         )
-        assertEquals(DetectionCategory.ATTACKER, flipperName.category)
+        assertEquals(DetectionCategory.AUDIT_TOOL, flipperName.category)
+
+        // Ordinary Wi-Fi SSID starting with "Flipper" is not flagged as a BLE Flipper Zero
+        val ordinaryWifiFlipper = DetectionClassifier.classifyRaw(
+            mac = "00:22:33:44:55:99",
+            name = "Flipper's Diner WiFi",
+            type = "W",
+            randomised = false,
+            securitySuite = SecuritySuite.WPA2,
+            inDatabase = true,
+            hasDatabase = true,
+        )
+        assertEquals(DetectionCategory.NORMAL, ordinaryWifiFlipper.category)
 
         val flipperUuid = DetectionClassifier.classifyRaw(
             mac = "80:E1:26:04:05:06",
@@ -53,7 +70,7 @@ class DetectionClassifierTest {
             randomised = false,
             adv = listOf("Services: 0x3081"),
         )
-        assertEquals(DetectionCategory.ATTACKER, flipperUuid.category)
+        assertEquals(DetectionCategory.AUDIT_TOOL, flipperUuid.category)
 
         val marauder = DetectionClassifier.classifyRaw(
             mac = "24:6F:28:AA:BB:CC",
@@ -61,7 +78,7 @@ class DetectionClassifierTest {
             type = "W",
             randomised = false,
         )
-        assertEquals(DetectionCategory.ATTACKER, marauder.category)
+        assertEquals(DetectionCategory.AUDIT_TOOL, marauder.category)
     }
 
     @Test

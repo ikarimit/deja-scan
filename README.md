@@ -2,15 +2,15 @@
 
 An Android app that imports the SQLite backup database of the WiGLE Android app and checks, live, whether any
 saved devices (Wi-Fi access points, Bluetooth Classic, Bluetooth LE) are nearby — while classifying RF rarity,
-outdated security, randomized MACs, and potential wireless audit/attack tools.
+outdated security, randomized MACs, and possible wireless audit tools (heuristic).
 
 Not affiliated with WiGLE, IEEE, the Bluetooth SIG, or OpenStreetMap.
 
 ## Features
 
-- **WiGLE SQLite Import & Two-Way Merge:** Import WiGLE `.sqlite` backups with observation histories (retaining frequency and security capabilities) and merge newly discovered live networks and GPS sightings directly back into the linked WiGLE file from the **Devices** tab.
+- **WiGLE SQLite Import & Safe Two-Way Merge:** Import WiGLE `.sqlite` backups with observation histories (retaining frequency and security capabilities) and safely merge newly discovered live networks and GPS sightings from the **Devices** tab — either exporting a verified new `.sqlite` file or updating the linked file after `PRAGMA integrity_check` with an automatic local backup preserved.
 - **6-Tier Color Classification Scheme:** Unified color coding across Radar blips, Signal rows, Vendor lists, Device cards, Map dots, and the Info inspector:
-  - **Threat / Potential Attacker (`#FF2A55` Crimson):** Pwnagotchi (`pwnd` / `de:ad:be:ef:de:ad`), Hak5 WiFi Pineapple (`00:13:37` / PineAP), Flipper Zero, ESP32 Marauder, 802.11 Deauther, and rogue AP signatures.
+  - **Possible audit tool (heuristic) (`#FF2A55` Crimson, `AUDIT`):** Heuristic patterns such as `de:ad:be:ef:de:ad` (Pwnagotchi peer MAC), `00:13:37` prefix (also an assigned IEEE OUI), Flipper Zero BLE service UUIDs / BT names, ESP32 Marauder, and 802.11 Deauther strings (unverified heuristics; ordinary devices can match).
   - **Outdated WEP (`#FF6D00` Blaze Orange):** Broken RC4 WEP encryption (live beacons and stored WiGLE records).
   - **Rare Detection (`#FFD600` Gold):** Wi-Fi 7 (802.11be / 320 MHz), 6 GHz band (Wi-Fi 6E / 7), 2.4 GHz Ch 14, Ad-Hoc (`IBSS`), 802.11s Mesh, 60 GHz WiGig, WPA3-Enterprise Suite-B, rare Bluetooth classes (Medical, Imaging, Toy), and unique uncommon hardware vendor OUIs.
   - **Uncommon (`#00E5FF` Cyan):** OWE (Enhanced Open), 160 MHz wide channels, 802.1X Enterprise, Passpoint (Hotspot 2.0), legacy WPA1/TKIP, unencrypted Open Wi-Fi, and newly discovered fixed-MAC devices unseen in the linked WiGLE database.
@@ -19,8 +19,8 @@ Not affiliated with WiGLE, IEEE, the Bluetooth SIG, or OpenStreetMap.
 - **Channel & Channel Width Everywhere:** Even without a dedicated spectrum analyzer screen, Wi-Fi channel numbers and channel widths (e.g., `Ch 36 • 80MHz`, `Ch 1 (6G) • 320MHz`, plus MHz frequency span) are surfaced directly in **Live** (`Radar`, `Signals`, `Vendors`), **Devices** cards, **Map** selection HUD tags, and the **Info** inspector.
 - **Condensed, Compartmentalized UI:**
   - **Live:** Slim header with one-tap `SCAN`/`STOP`, `BG` permission badge, and interactive `ROOT` / `ROOT • MON` / `USER` indicator; compact telemetry & clickable category counter strip; and four focused compartments:
-    1. *Radar:* 360° proximity sweep (`ALL` vs. `WATCHED` scope toggle) with pulsing rings on threats and WEP.
-    2. *Signals:* Ranked live feed with quick filter pills (`ALL`, `WATCHED`, `THREAT/WEP`, `RARE`, `RAND`), channel + width tags, and signal meters.
+    1. *Radar:* 360° proximity sweep (`ALL` vs. `WATCHED` scope toggle) with pulsing rings on audit-tool heuristics and WEP.
+    2. *Signals:* Ranked live feed with quick filter pills (`ALL`, `WATCHED`, `AUDIT/WEP`, `RARE`, `RAND`), channel + width tags, and signal meters.
     3. *Activity:* Combined **Signal History** timelines, rolling **AP Density** per-minute chart, and **Passive 802.11 Monitor** (`SIGNAL` / `DENSITY` / `MONITOR`).
     4. *Vendors:* Live manufacturer grouping (IEEE OUI & Bluetooth SIG company IDs) with monogram badges and search.
   - **Devices:** Collapsible *Watch & Notification Rules*, *WiGLE Database Sync*, and *Root / Promiscuous Mode* compartments, instant SSID/MAC/Date search, category filter chips, and tap-to-inspect details.

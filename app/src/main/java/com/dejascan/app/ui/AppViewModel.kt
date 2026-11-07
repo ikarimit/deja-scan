@@ -30,19 +30,23 @@ import com.dejascan.app.scan.DetectionClassifier
 import com.dejascan.app.scan.MacUtil
 import com.dejascan.app.scan.RootDetector
 import com.dejascan.app.scan.ScanService
+import com.dejascan.app.scan.Sighting
 import com.dejascan.app.scan.SightingBus
+import com.dejascan.app.scan.promiscuous.PrefsRestoreStateStore
 import com.dejascan.app.scan.promiscuous.PromiscuousMonitor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val db = DejaDb(app)
     private val prefs = Prefs(app)
 
-    var isRooted by mutableStateOf(RootDetector.isRooted); private set
+    var isRooted by mutableStateOf(RootDetector.peekCached()); private set
+    var hasMergeBackup by mutableStateOf(latestBackupFile().let { it.isFile && it.length() > 0L }); private set
     var promiscuousEnabled by mutableStateOf(prefs.promiscuousEnabled); private set
     var promiscuousIface by mutableStateOf(prefs.promiscuousIface); private set
     var promiscuousDriverSwitch by mutableStateOf(prefs.promiscuousDriverSwitch); private set
@@ -96,19 +100,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     init {
         mapFiles = scanMaps()
         viewModelScope.launch(Dispatchers.IO) {
+            val rooted = RootDetector.refresh()
+            withContext(Dispatchers.Main) { isRooted = rooted }
             if (db.count() > 0 && (!db.cellsReady() || (db.obsCount() > 0 && !db.linkedReady()))) indexCells()
-            if (isRooted) PromiscuousMonitor().probeCapabilities()
+            if (rooted) PromiscuousMonitor(restoreStore = PrefsRestoreStateStore(prefs)).probeCapabilities()
         }
         refresh()
         refreshLinked(force = false)
     }
 
     fun changePromiscuousEnabled(enabled: Boolean) {
-        val next = enabled && isRooted
-        promiscuousEnabled = next
-        prefs.promiscuousEnabled = next
-        if (next) probePromiscuousCapabilities()
-        ScanService.syncPromiscuous(getApplication())
+        viewModelScope.launch(Dispatchers.IO) {
+            val rooted = if (enabled) RootDetector.refresh() else RootDetector.peekCached()
+            val next = enabled && rooted
+            prefs.promiscuousEnabled = next
+            withContext(Dispatchers.Main) {
+                isRooted = rooted
+                promiscuousEnabled = next
+            }
+            if (next) {
+                PromiscuousMonitor(restoreStore = PrefsRestoreStateStore(prefs)).probeCapabilities()
+            }
+            withContext(Dispatchers.Main) {
+                ScanService.syncPromiscuous(getApplication())
+            }
+        }
     }
 
     fun changePromiscuousIface(iface: String) {
@@ -125,8 +141,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun probePromiscuousCapabilities() {
         viewModelScope.launch(Dispatchers.IO) {
-            isRooted = RootDetector.checkRoot()
-            PromiscuousMonitor().probeCapabilities()
+            val rooted = RootDetector.refresh()
+            withContext(Dispatchers.Main) { isRooted = rooted }
+            PromiscuousMonitor(restoreStore = PrefsRestoreStateStore(prefs)).probeCapabilities()
         }
     }
 
@@ -136,13 +153,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun select(mac: String?) {
-        selectedMac = mac
-        if (mac == null) { selectedPlaces = emptyList(); selectedDevice = null; return }
+        val norm = if (mac == null) null else MacUtil.normalize(mac)
+        selectedMac = norm
+        if (norm == null) { selectedPlaces = emptyList(); selectedDevice = null; return }
         viewModelScope.launch(Dispatchers.IO) {
-            val dev = try { db.devices(listOf(mac)).firstOrNull() } catch (_: Exception) { null }
-            val places = try { collapsePlaces(db.placesOf(listOf(mac))[mac] ?: emptyList()) } catch (_: Exception) { emptyList() }
+            val dev = try { db.devices(listOf(norm)).firstOrNull() } catch (_: Exception) { null }
+            val places = try { collapsePlaces(db.placesOf(listOf(norm))[norm] ?: emptyList()) } catch (_: Exception) { emptyList() }
             withContext(Dispatchers.Main) {
-                if (selectedMac == mac) { selectedDevice = dev; selectedPlaces = places }
+                if (selectedMac == norm) { selectedDevice = dev; selectedPlaces = places }
             }
         }
     }
@@ -366,9 +384,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadTrail(mac: String?) {
+        val norm = if (mac == null) null else MacUtil.normalize(mac)
         viewModelScope.launch(Dispatchers.IO) {
-            val obs = if (mac == null) emptyList() else db.obsFor(mac, MAP_POINT_LIMIT)
-            val own = if (mac == null) emptyList() else db.sightsFor(mac, 0L, MAP_POINT_LIMIT)
+            val obs = if (norm == null) emptyList() else db.obsFor(norm, MAP_POINT_LIMIT)
+            val obsTimes = obs.mapTo(HashSet(obs.size)) { it.time }
+            val own = if (norm == null) emptyList() else db.sightsFor(norm, 0L, MAP_POINT_LIMIT).filter { it.time !in obsTimes }
             withContext(Dispatchers.Main) { trailObs = obs; trailOwn = own }
         }
     }
@@ -419,7 +439,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     val input = getApplication<Application>().contentResolver.openInputStream(uri)
                         ?: throw IllegalStateException("cannot open $name")
                     input.use { i -> tmp.outputStream().use { o -> i.copyTo(o) } }
-                    val head = tmp.inputStream().use { it.readNBytes(MAP_MAGIC.length).toString(Charsets.US_ASCII) }
+                    val head = tmp.inputStream().use { s ->
+                        val buf = ByteArray(MAP_MAGIC.length)
+                        var off = 0
+                        while (off < buf.size) {
+                            val n = s.read(buf, off, buf.size - off)
+                            if (n <= 0) break
+                            off += n
+                        }
+                        String(buf, 0, off, Charsets.US_ASCII)
+                    }
                     if (head != MAP_MAGIC) throw IllegalStateException("$name is not a Mapsforge .map file")
                     val dest = File(dir, name)
                     dest.delete()
@@ -501,6 +530,204 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         refreshLinked(force = true)
     }
 
+    private fun backupDir() = File(getApplication<Application>().filesDir, "backups").apply { mkdirs() }
+    private fun latestBackupFile() = File(backupDir(), "wigle-pre-merge.sqlite")
+
+    fun suggestedMergedFileName(): String {
+        val base = prefs.linkedName.ifEmpty { "wiglewifi.sqlite" }
+            .removeSuffix(".sqlite").removeSuffix(".db")
+        return "$base-merged.sqlite"
+    }
+
+    private fun cleanSqliteTemp(base: File) {
+        base.delete()
+        File("${base.path}-wal").delete()
+        File("${base.path}-shm").delete()
+        File("${base.path}-journal").delete()
+    }
+
+    private fun writeFileToUriSafely(src: File, destUri: Uri) {
+        val resolver = getApplication<Application>().contentResolver
+        val outStream = try {
+            resolver.openOutputStream(destUri, "wt")
+        } catch (_: Exception) {
+            try {
+                resolver.openOutputStream(destUri, "rwt")
+            } catch (_: Exception) {
+                resolver.openOutputStream(destUri, "w")
+            }
+        } ?: throw IllegalStateException("Cannot open destination file for writing. Check write permissions.")
+
+        outStream.use { out ->
+            src.inputStream().use { inp -> inp.copyTo(out) }
+            out.flush()
+            if (out is FileOutputStream) {
+                runCatching { out.fd.sync() }
+            }
+        }
+    }
+
+    /**
+     * Copies the linked WiGLE database into a verified persistent backup (`filesDir/backups/wigle-pre-merge.sqlite`),
+     * runs the merge on an isolated temporary working file, and verifies `PRAGMA integrity_check` before any output write.
+     */
+    private fun buildVerifiedMergedFile(
+        sourceUri: Uri,
+        allSightings: Collection<Sighting>,
+        allSights: List<WigleMerger.SightRecord>,
+        workFile: File,
+    ): WigleMerger.Result {
+        val resolver = getApplication<Application>().contentResolver
+        val backupTmp = File(backupDir(), "wigle-pre-merge.sqlite.tmp")
+        cleanSqliteTemp(backupTmp)
+        try {
+            val input = resolver.openInputStream(sourceUri)
+                ?: throw IllegalStateException("Cannot open linked file for reading")
+            input.use { i -> backupTmp.outputStream().use { o -> i.copyTo(o); o.flush(); runCatching { o.fd.sync() } } }
+            WigleMerger.verifyIntegrity(backupTmp)
+
+            val backupDest = latestBackupFile()
+            val prevBackup = File(backupDir(), "wigle-pre-merge.sqlite.prev")
+            if (backupDest.exists()) {
+                prevBackup.delete()
+                backupDest.renameTo(prevBackup)
+            }
+            if (!backupTmp.renameTo(backupDest)) {
+                backupTmp.copyTo(backupDest, overwrite = true)
+                backupTmp.delete()
+            }
+            prevBackup.delete()
+        } finally {
+            cleanSqliteTemp(backupTmp)
+        }
+
+        cleanSqliteTemp(workFile)
+        latestBackupFile().copyTo(workFile, overwrite = true)
+        val res = WigleMerger.merge(workFile, allSightings, allSights) { m ->
+            viewModelScope.launch(Dispatchers.Main) { status = m }
+        }
+        WigleMerger.verifyIntegrity(workFile)
+        return res
+    }
+
+    private suspend fun updateLocalDbAfterMerge(
+        allSightings: Collection<Sighting>,
+        allSights: List<WigleMerger.SightRecord>,
+    ) {
+        val sightsByMac = allSights.groupBy { MacUtil.normalize(it.mac).orEmpty() }
+        val mergedDevices = allSightings.mapNotNull { s ->
+            val mac = MacUtil.normalize(s.mac) ?: return@mapNotNull null
+            val rec = WigleMerger.prepareNetworkRecord(s, sightsByMac[mac] ?: emptyList())
+            val loc = WigleImporter.pickLocation(rec.bestLat, rec.bestLon, rec.lastLat, rec.lastLon)
+            Device(
+                mac = mac,
+                name = MacUtil.cleanAirText(rec.ssid),
+                type = s.type,
+                lastTime = rec.lastTime,
+                lat = loc.first,
+                lon = loc.second,
+                randomised = s.randomised,
+                watched = s.watched,
+                freq = rec.frequency,
+                caps = rec.capabilities,
+            )
+        }
+        db.mergeDevicesBatch(mergedDevices.asSequence())
+
+        val combinedSights = WigleMerger.prepareCombinedSights(allSightings, allSights)
+        val obsRows = combinedSights.mapNotNull { sr ->
+            val mac = MacUtil.normalize(sr.mac) ?: return@mapNotNull null
+            if (!WigleImporter.validLocation(sr.lat, sr.lon)) return@mapNotNull null
+            ObsRow(mac, sr.time, sr.lat, sr.lon, sr.rssi)
+        }
+        db.insertObsBatch(obsRows)
+
+        try {
+            db.rebuildCells()
+            db.rebuildLinked()
+        } catch (_: Exception) {}
+
+        val known = db.filterKnown(SightingBus.sightings.value.keys)
+        withContext(Dispatchers.Main) {
+            SightingBus.markKnown(known)
+        }
+    }
+
+    /** Non-destructive merge: writes the verified merged WiGLE SQLite database to a newly chosen [destUri]. */
+    fun exportMergedToUri(destUri: Uri) {
+        val raw = prefs.linkedUri
+        if (raw.isEmpty()) {
+            status = "No file linked yet. Use Link WiGLE file."
+            return
+        }
+        if (busy) return
+        busy = true
+        status = "Building verified merged WiGLE copy..."
+        viewModelScope.launch(Dispatchers.IO) {
+            val sourceUri = Uri.parse(raw)
+            val workFile = File(getApplication<Application>().cacheDir, "merge-export.sqlite")
+            var msg: String
+            try {
+                val allSightings = SightingBus.sightings.value.values.toList()
+                val allSights = try { db.allSights() } catch (_: Exception) { emptyList() }
+                if (allSightings.isEmpty() && allSights.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        status = "No new sightings or locations to merge."
+                        busy = false
+                    }
+                    return@launch
+                }
+
+                val res = buildVerifiedMergedFile(sourceUri, allSightings, allSights, workFile)
+                writeFileToUriSafely(workFile, destUri)
+                updateLocalDbAfterMerge(allSightings, allSights)
+                val outName = queryMeta(destUri)?.first ?: "new file"
+                msg = "Saved verified merge to $outName: ${res.newNetworks} new, ${res.updatedNetworks} updated, ${res.newLocations} locations."
+            } catch (e: Exception) {
+                msg = "Export merge failed (original untouched): ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                cleanSqliteTemp(workFile)
+            }
+            prefs.lastImport = msg
+            val list = if (query.isBlank()) db.watched() else db.search(query)
+            val n = db.count()
+            val backupExists = latestBackupFile().let { it.isFile && it.length() > 0L }
+            withContext(Dispatchers.Main) {
+                hasMergeBackup = backupExists
+                status = msg
+                devices = list
+                total = n
+                busy = false
+                dataVersion++
+            }
+        }
+    }
+
+    /** Exports the preserved pre-merge backup copy (`wigle-pre-merge.sqlite`) to [destUri]. */
+    fun exportBackupToUri(destUri: Uri) {
+        val backup = latestBackupFile()
+        if (!backup.isFile || backup.length() <= 0L) {
+            status = "No pre-merge backup available yet."
+            return
+        }
+        if (busy) return
+        busy = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val msg = try {
+                WigleMerger.verifyIntegrity(backup)
+                writeFileToUriSafely(backup, destUri)
+                val outName = queryMeta(destUri)?.first ?: "backup file"
+                "Exported intact pre-merge backup to $outName."
+            } catch (e: Exception) {
+                "Backup export failed: ${e.message ?: e.javaClass.simpleName}"
+            }
+            withContext(Dispatchers.Main) {
+                status = msg
+                busy = false
+            }
+        }
+    }
+
     fun mergeFindingsIntoLinked() {
         val raw = prefs.linkedUri
         if (raw.isEmpty()) {
@@ -509,18 +736,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (busy) return
         busy = true
-        status = "Merging findings into linked file..."
+        status = "Backing up & merging findings..."
         viewModelScope.launch(Dispatchers.IO) {
             val uri = Uri.parse(raw)
-            val resolver = getApplication<Application>().contentResolver
-            val cache = File(getApplication<Application>().cacheDir, "merge.sqlite")
+            val workFile = File(getApplication<Application>().cacheDir, "merge.sqlite")
             var msg: String
             try {
-                val input = resolver.openInputStream(uri)
-                    ?: throw IllegalStateException("Cannot open linked file for reading")
-                input.use { i -> cache.outputStream().use { o -> i.copyTo(o) } }
-
-                val allSightings = SightingBus.sightings.value.values
+                val allSightings = SightingBus.sightings.value.values.toList()
                 val allSights = try { db.allSights() } catch (_: Exception) { emptyList() }
 
                 if (allSightings.isEmpty() && allSights.isEmpty()) {
@@ -531,69 +753,42 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
 
-                val res = WigleMerger.merge(cache, allSightings, allSights) { m ->
-                    viewModelScope.launch(Dispatchers.Main) { status = m }
-                }
+                // 1. Save verified pre-merge backup + build & integrity-check merged temp SQLite BEFORE opening uri for write
+                val res = buildVerifiedMergedFile(uri, allSightings, allSights, workFile)
 
-                val outStream = try {
-                    resolver.openOutputStream(uri, "wt")
-                } catch (_: Exception) {
-                    try {
-                        resolver.openOutputStream(uri, "rwt")
-                    } catch (_: Exception) {
-                        resolver.openOutputStream(uri, "w")
+                // 2. Stream verified SQLite back; on partial write failure, attempt rollback from backup
+                try {
+                    writeFileToUriSafely(workFile, uri)
+                } catch (writeErr: Exception) {
+                    val backup = latestBackupFile()
+                    val rolledBack = if (backup.isFile && backup.length() > 0L) {
+                        runCatching { writeFileToUriSafely(backup, uri); true }.getOrDefault(false)
+                    } else false
+                    val recoveryNote = if (rolledBack) {
+                        "Original restored from local backup."
+                    } else {
+                        "Intact backup kept in app storage (use Export backup)."
                     }
-                } ?: throw IllegalStateException("Cannot open linked file for writing. Ensure write permissions.")
-
-                outStream.use { out ->
-                    cache.inputStream().use { inp ->
-                        inp.copyTo(out)
-                    }
+                    throw IllegalStateException("${writeErr.message ?: writeErr.javaClass.simpleName}. $recoveryNote", writeErr)
                 }
 
                 val meta = queryMeta(uri)
                 prefs.linkedModified = meta?.second ?: System.currentTimeMillis()
 
-                val newDevices = allSightings.map { s ->
-                    val rawCaps = s.adv.firstOrNull { it.startsWith("Raw Caps: ") }?.removePrefix("Raw Caps: ").orEmpty()
-                    Device(
-                        mac = s.mac,
-                        name = if (s.name != s.mac) s.name else "",
-                        type = s.type,
-                        lastTime = s.time,
-                        lat = s.lat,
-                        lon = s.lon,
-                        randomised = s.randomised,
-                        watched = s.watched,
-                        freq = s.freq,
-                        caps = rawCaps,
-                    )
-                }
-                db.upsertBatch(newDevices.asSequence())
+                updateLocalDbAfterMerge(allSightings, allSights)
 
-                val obsRows = allSights.map { ObsRow(it.mac, it.time, it.lat, it.lon, it.rssi) }
-                db.insertObsBatch(obsRows)
-
-                try {
-                    db.rebuildCells()
-                    db.rebuildLinked()
-                } catch (_: Exception) {}
-
-                val known = db.filterKnown(SightingBus.sightings.value.keys)
-                withContext(Dispatchers.Main) {
-                    SightingBus.markKnown(known)
-                }
-
-                msg = "Merged into ${prefs.linkedName}: ${res.newNetworks} new, ${res.updatedNetworks} updated, ${res.newLocations} locations."
+                msg = "Merged into ${prefs.linkedName} (verified + backup kept): ${res.newNetworks} new, ${res.updatedNetworks} updated, ${res.newLocations} locations."
             } catch (e: Exception) {
                 msg = "Merge failed: ${e.message ?: e.javaClass.simpleName}"
             } finally {
-                cache.delete()
+                cleanSqliteTemp(workFile)
             }
             prefs.lastImport = msg
             val list = if (query.isBlank()) db.watched() else db.search(query)
             val n = db.count()
+            val backupExists = latestBackupFile().let { it.isFile && it.length() > 0L }
             withContext(Dispatchers.Main) {
+                hasMergeBackup = backupExists
                 status = msg
                 devices = list
                 total = n

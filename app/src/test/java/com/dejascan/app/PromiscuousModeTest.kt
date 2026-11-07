@@ -4,11 +4,13 @@ import com.dejascan.app.data.Device
 import com.dejascan.app.scan.SightingBus
 import com.dejascan.app.scan.promiscuous.CtrlSubtype
 import com.dejascan.app.scan.promiscuous.Dot11FrameParser
+import com.dejascan.app.scan.promiscuous.InMemoryRestoreStateStore
 import com.dejascan.app.scan.promiscuous.MgmtSubtype
 import com.dejascan.app.scan.promiscuous.MonitorState
 import com.dejascan.app.scan.promiscuous.ParsedDot11Frame
 import com.dejascan.app.scan.promiscuous.PromiscuousMonitor
 import com.dejascan.app.scan.promiscuous.PromiscuousTracker
+import com.dejascan.app.scan.promiscuous.RestoreKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -389,5 +391,92 @@ class PromiscuousModeTest {
         assertEquals("wlan0", qcomSetup!!.captureIface)
         assertEquals(MonitorState.ACTIVE_MONITOR, qcomSetup.mode)
         assertTrue(qcomSetup.teardownCmd!!.contains("echo 0 > /sys/module/wlan/parameters/con_mode"))
+    }
+
+    @Test
+    fun testRejectsWritableBinaryFoldersAndRestoresAfterSimulatedCrash() {
+        // Writable folders (/data/local/tmp, Termux) must never be probed or accepted as root binaries
+        assertFalse(PromiscuousMonitor.isTrustedBinaryPath("/data/local/tmp/tcpdump", "tcpdump"))
+        assertFalse(PromiscuousMonitor.isTrustedBinaryPath("/data/data/com.termux/files/usr/bin/iw", "iw"))
+        assertFalse(PromiscuousMonitor.isTrustedBinaryPath("/system/bin/../data/local/tmp/ip", "ip"))
+        assertTrue(PromiscuousMonitor.isTrustedBinaryPath("/system/xbin/tcpdump", "tcpdump"))
+        assertTrue(PromiscuousMonitor.isTrustedBinaryPath("/vendor/bin/iw", "iw"))
+
+        val tracker = PromiscuousTracker()
+        val store = InMemoryRestoreStateStore()
+        val executedCommands = ArrayList<String>()
+
+        val untrustedMonitor = PromiscuousMonitor(
+            tracker = tracker,
+            isDeviceRooted = { true },
+            restoreStore = store,
+            rootShell = { cmd ->
+                executedCommands += cmd
+                when {
+                    cmd == "id" -> PromiscuousMonitor.ShellResult(0, "uid=0(root)")
+                    cmd.contains("IFACE:") -> {
+                        // Ensure the probe script itself does not scan /data/local/tmp or termux
+                        assertFalse(cmd.contains("/data/local/tmp"))
+                        assertFalse(cmd.contains("com.termux"))
+                        PromiscuousMonitor.ShellResult(
+                            0,
+                            """
+                            IFACE:wlan0
+                            BIN:tcpdump:/data/local/tmp/tcpdump
+                            BIN:iw:/data/data/com.termux/files/usr/bin/iw
+                            BIN:ip:/system/bin/ip
+                            """.trimIndent(),
+                        )
+                    }
+                    else -> PromiscuousMonitor.ShellResult(0, "")
+                }
+            },
+        )
+        val untrustedCaps = untrustedMonitor.probeCapabilities()
+        assertNull(untrustedCaps.tcpdumpPath)
+        assertNull(untrustedCaps.iwPath)
+        assertFalse(untrustedCaps.canCaptureDot11)
+
+        // Simulate enabling Qualcomm con_mode=4 and then crashing before cleanupCapture() runs
+        val crashStore = InMemoryRestoreStateStore()
+        val crashMonitor = PromiscuousMonitor(
+            tracker = tracker,
+            isDeviceRooted = { true },
+            restoreStore = crashStore,
+            rootShell = { cmd ->
+                executedCommands += cmd
+                PromiscuousMonitor.ShellResult(0, "0")
+            },
+        )
+        val validCaps = untrustedCaps.copy(
+            tcpdumpPath = "/system/xbin/tcpdump",
+            ipPath = "/system/bin/ip",
+            qcomConModePath = "/sys/module/wlan/parameters/con_mode",
+        )
+        val setup = crashMonitor.prepareInterface(validCaps, preferred = "auto", allowDriverSwitch = true)
+        assertNotNull(setup)
+        // Pending restore must already be persisted in the store before capture even begins
+        val pending = crashStore.load()
+        assertNotNull(pending)
+        assertEquals(RestoreKind.QCOM_CONMODE, pending!!.kind)
+
+        // Next app start creates a fresh PromiscuousMonitor sharing the same persisted store
+        val recoveryCommands = ArrayList<String>()
+        val nextStartMonitor = PromiscuousMonitor(
+            tracker = tracker,
+            isDeviceRooted = { true },
+            restoreStore = crashStore,
+            rootShell = { cmd ->
+                recoveryCommands += cmd
+                when {
+                    cmd == "id" -> PromiscuousMonitor.ShellResult(0, "uid=0(root)")
+                    cmd.contains("BIN:") -> PromiscuousMonitor.ShellResult(0, "BIN:ip:/system/bin/ip\nBIN:iw:/vendor/bin/iw")
+                    else -> PromiscuousMonitor.ShellResult(0, "")
+                }
+            },
+        )
+        assertTrue(nextStartMonitor.restorePendingIfNeeded())
+        assertNull(crashStore.load())
+        assertTrue(recoveryCommands.any { it.contains("echo 0 > /sys/module/wlan/parameters/con_mode") })
     }
 }

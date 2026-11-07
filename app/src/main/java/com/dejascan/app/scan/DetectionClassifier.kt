@@ -5,7 +5,7 @@ import com.dejascan.app.data.Vendors
 
 /**
  * Unified visual classification for Wi-Fi and Bluetooth detections:
- * - [ATTACKER]: Potential offensive / rogue hardware (Pwnagotchi, WiFi Pineapple, Flipper Zero, Marauder, Deauther)
+ * - [AUDIT_TOOL]: Possible wireless audit / research hardware matched by heuristic (unverified; see docs/SOURCES.md C-014)
  * - [WEP]: Outdated WEP encryption (broken RC4 cipher)
  * - [RARE]: Rare RF / protocol / hardware detections (6 GHz, Wi-Fi 7 / 320 MHz, Mesh/IBSS, Ch 14, rare BT classes, rare OUI)
  * - [UNCOMMON]: Uncommon configurations or newly discovered fixed-MAC devices (OWE, 802.1X, 160 MHz, Passpoint, WPA1, Open, new OUI)
@@ -19,7 +19,7 @@ enum class DetectionCategory(
     val mapColorArgb: Int,
     val priority: Int,
 ) {
-    ATTACKER("Potential Attacker", "THREAT", 0xFFFF2A55, 0xFFFF1744.toInt(), 0),
+    AUDIT_TOOL("Possible audit tool (heuristic)", "AUDIT", 0xFFFF2A55, 0xFFFF1744.toInt(), 0),
     WEP("Outdated WEP", "WEP", 0xFFFF6D00, 0xFFFF6D00.toInt(), 1),
     RARE("Rare Detection", "RARE", 0xFFFFD600, 0xFFF9A825.toInt(), 2),
     UNCOMMON("Uncommon", "UNCOMMON", 0xFF00E5FF, 0xFF00ACC1.toInt(), 3),
@@ -34,20 +34,25 @@ data class Classification(
 
 object DetectionClassifier {
 
-    private val ATTACKER_MAC_PREFIXES = listOf(
-        "00:13:37" to "Hak5 / WiFi Pineapple OUI (00:13:37)",
+    /**
+     * Heuristic MAC prefixes (unverified; see docs/SOURCES.md C-014).
+     * Note: 00:13:37 is also a legitimate IEEE OUI block, so ordinary hardware can match.
+     */
+    private val HEURISTIC_MAC_PREFIXES = listOf(
+        "00:13:37" to "Possible audit tool (heuristic: 00:13:37 prefix; also an assigned OUI)",
     )
 
-    private val ATTACKER_NAME_PATTERNS = listOf(
-        Regex("(?i)\\bpwnagotchi\\b|pwnagotchi") to "Pwnagotchi wireless unit signature",
-        Regex("(?i)^pwnd\\b|\\bpwnd[_-]") to "Pwnagotchi pwnd beacon signature",
-        Regex("(?i)wifi[_ -]?pineapple|\\bpineap\\b|\\bhak5\\b") to "Hak5 WiFi Pineapple signature",
-        Regex("(?i)\\bmarauder\\b|esp32[_ -]?marauder") to "ESP32 Wi-Fi/BLE Marauder signature",
-        Regex("(?i)\\bdeauther\\b|pwned[_ -]?ap") to "802.11 Deauther tool signature",
-        Regex("(?i)\\bwifiphisher\\b|\\bairgeddon\\b|\\bevil[_ -]?twin\\b") to "Rogue AP / phishing framework signature",
-        Regex("(?i)^flipper\\s+\\S+") to "Flipper Zero wireless radio signature",
-        Regex("(?i)\\bbjorn[_ -]?cyber|\\bm5pwn\\b") to "Portable offensive audit unit signature",
+    private val HEURISTIC_NAME_PATTERNS = listOf(
+        Regex("(?i)\\bpwnagotchi\\b|pwnagotchi") to "Possible audit tool (heuristic: Pwnagotchi name pattern)",
+        Regex("(?i)^pwnd\\b|\\bpwnd[_-]") to "Possible audit tool (heuristic: pwnd beacon name pattern)",
+        Regex("(?i)wifi[_ -]?pineapple|\\bpineap\\b|\\bhak5\\b") to "Possible audit tool (heuristic: Pineapple / Hak5 name pattern)",
+        Regex("(?i)\\bmarauder\\b|esp32[_ -]?marauder") to "Possible audit tool (heuristic: ESP32 Marauder name pattern)",
+        Regex("(?i)\\bdeauther\\b|pwned[_ -]?ap") to "Possible audit tool (heuristic: 802.11 Deauther name pattern)",
+        Regex("(?i)\\bwifiphisher\\b|\\bairgeddon\\b|\\bevil[_ -]?twin\\b") to "Possible audit tool (heuristic: wireless audit framework name)",
+        Regex("(?i)\\bbjorn[_ -]?cyber|\\bm5pwn\\b") to "Possible audit tool (heuristic: portable audit unit name)",
     )
+
+    private val FLIPPER_BT_NAME_PATTERN = Regex("(?i)^flipper\\s+[A-Za-z0-9_-]{3,16}$")
 
     private val FLIPPER_SERVICE_UUIDS = listOf("0x3081", "0x3082", "0x3083", "00003081", "00003082", "00003083")
 
@@ -132,29 +137,44 @@ object DetectionClassifier {
         val cleanName = if (name.equals(mac, ignoreCase = true)) "" else name.trim()
         val upperCaps = caps.uppercase()
 
-        // 1. Potential Attackers (Pwnagotchi, WiFi Pineapple, Flipper Zero, Marauder, Deauther)
+        // 1. Possible audit tools matched by heuristic (unverified; see docs/SOURCES.md C-014)
         if (normMac == "de:ad:be:ef:de:ad") {
-            return Classification(DetectionCategory.ATTACKER, "Pwnagotchi peer grid MAC (de:ad:be:ef:de:ad)")
+            return Classification(
+                DetectionCategory.AUDIT_TOOL,
+                "Possible audit tool (heuristic: de:ad:be:ef:de:ad Pwnagotchi grid MAC)",
+            )
         }
-        for ((prefix, reason) in ATTACKER_MAC_PREFIXES) {
+        for ((prefix, reason) in HEURISTIC_MAC_PREFIXES) {
             if (normMac.startsWith(prefix)) {
-                return Classification(DetectionCategory.ATTACKER, reason)
+                return Classification(DetectionCategory.AUDIT_TOOL, reason)
             }
         }
         if (cleanName.isNotEmpty()) {
-            for ((regex, reason) in ATTACKER_NAME_PATTERNS) {
+            for ((regex, reason) in HEURISTIC_NAME_PATTERNS) {
                 if (regex.containsMatchIn(cleanName)) {
-                    return Classification(DetectionCategory.ATTACKER, reason)
+                    return Classification(DetectionCategory.AUDIT_TOOL, reason)
                 }
+            }
+            if (type != "W" && FLIPPER_BT_NAME_PATTERN.matches(cleanName)) {
+                return Classification(
+                    DetectionCategory.AUDIT_TOOL,
+                    "Possible audit tool (heuristic: 'Flipper' BT/BLE name; may match ordinary devices)",
+                )
             }
         }
         if (type != "W" && adv.isNotEmpty()) {
             val joinedAdv = adv.joinToString(" ").lowercase()
             if (FLIPPER_SERVICE_UUIDS.any { joinedAdv.contains(it) }) {
-                return Classification(DetectionCategory.ATTACKER, "Flipper Zero BLE GATT service UUID")
+                return Classification(
+                    DetectionCategory.AUDIT_TOOL,
+                    "Possible audit tool (heuristic: Flipper Zero BLE service UUID)",
+                )
             }
             if (joinedAdv.contains("marauder") || joinedAdv.contains("pwnagotchi")) {
-                return Classification(DetectionCategory.ATTACKER, "Offensive wireless signature in advertisement")
+                return Classification(
+                    DetectionCategory.AUDIT_TOOL,
+                    "Possible audit tool (heuristic: audit tool keyword in advertisement)",
+                )
             }
         }
 

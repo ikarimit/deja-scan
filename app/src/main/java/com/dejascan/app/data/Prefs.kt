@@ -67,5 +67,39 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("promiscDriverSwitch", false)
         set(v) = sp.edit().putBoolean("promiscDriverSwitch", v).apply()
 
+    val promiscRestoreNeeded: Boolean
+        get() = sp.getBoolean("promiscRestoreNeeded", false)
+
+    val promiscRestoreKind: String
+        get() = sp.getString("promiscRestoreKind", "") ?: ""
+
+    val promiscRestoreIface: String
+        get() = sp.getString("promiscRestoreIface", "") ?: ""
+
+    val promiscRestoreConModePath: String
+        get() = sp.getString("promiscRestoreConModePath", "") ?: ""
+
+    /** Synchronously persists pending monitor/promiscuous teardown metadata before modifying an interface. */
+    @Suppress("ApplySharedPref")
+    fun savePromiscRestore(kind: String, iface: String, conModePath: String = "") {
+        sp.edit()
+            .putBoolean("promiscRestoreNeeded", true)
+            .putString("promiscRestoreKind", kind)
+            .putString("promiscRestoreIface", iface)
+            .putString("promiscRestoreConModePath", conModePath)
+            .commit()
+    }
+
+    /** Synchronously clears pending monitor/promiscuous teardown metadata once restored. */
+    @Suppress("ApplySharedPref")
+    fun clearPromiscRestore() {
+        sp.edit()
+            .putBoolean("promiscRestoreNeeded", false)
+            .remove("promiscRestoreKind")
+            .remove("promiscRestoreIface")
+            .remove("promiscRestoreConModePath")
+            .commit()
+    }
+
     fun filter() = WatchFilter(mode, types, skipRandomised)
 }

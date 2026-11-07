@@ -67,7 +67,7 @@ object WigleImporter {
             progress("Imported $devices devices. Importing observations...")
             val obs = try {
                 importObservations(db, target, progress)
-            } catch (e: SQLiteException) {
+            } catch (_: SQLiteException) {
                 0 // no usable location table: devices are still imported
             }
             return Result.Ok(devices, skipped, obs)

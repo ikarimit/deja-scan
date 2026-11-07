@@ -179,11 +179,9 @@ class WifiSecurityTest {
             lon = 0.0,
             securitySuite = SecuritySuite.WEP,
         )
-        assertTrue(wepSighting.isWep)
+        assertEquals(SecuritySuite.WEP, wepSighting.parsedCapabilities?.suite)
         assertFalse(wepSighting.isOpen)
-        assertTrue(wepSighting.hasSecurityIssue)
-        assertTrue(wepSighting.hasCriticalSecurityIssue)
-        assertEquals(SecurityIssueSeverity.CRITICAL, wepSighting.primarySecurityIssue?.severity)
+        assertTrue(wepSighting.parsedCapabilities!!.securityIssues.any { it.severity == SecurityIssueSeverity.CRITICAL })
 
         val secureSighting = Sighting(
             mac = "00:11:22:33:44:66",
@@ -203,9 +201,7 @@ class WifiSecurityTest {
             lon = 0.0,
             securitySuite = SecuritySuite.WPA3,
         )
-        assertFalse(secureSighting.isWep)
         assertFalse(secureSighting.isOpen)
-        assertFalse(secureSighting.hasSecurityIssue)
-        assertFalse(secureSighting.hasCriticalSecurityIssue)
+        assertTrue(secureSighting.parsedCapabilities!!.securityIssues.isEmpty())
     }
 }

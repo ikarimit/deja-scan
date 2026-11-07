@@ -228,8 +228,40 @@ object WigleMerger {
             } finally {
                 db.endTransaction()
             }
+            // Ensure any journal/WAL frames are flushed into the main SQLite file before streaming out
+            runCatching { db.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null).close() }
 
             return Result(newNets, updNets, newLocs)
+        }
+    }
+
+    /**
+     * Runs `PRAGMA integrity_check` and basic schema verification on [file].
+     * Throws [IllegalStateException] if the file is missing, empty, corrupt, or missing a `network` table.
+     */
+    fun verifyIntegrity(file: File) {
+        if (!file.exists() || file.length() <= 0L) {
+            throw IllegalStateException("SQLite file is empty or missing")
+        }
+        val db = try {
+            SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READONLY)
+        } catch (e: SQLiteException) {
+            throw IllegalStateException("Not a valid SQLite database: ${e.message}", e)
+        }
+        db.use {
+            val results = ArrayList<String>()
+            it.rawQuery("PRAGMA integrity_check", null).use { c ->
+                while (c.moveToNext()) {
+                    results.add(c.getString(0) ?: "")
+                }
+            }
+            if (results.isEmpty() || !results.all { r -> r.equals("ok", ignoreCase = true) }) {
+                throw IllegalStateException("SQLite integrity check failed: ${results.joinToString("; ")}")
+            }
+            val netCols = getTableColumns(it, "network")
+            if (!netCols.contains("bssid")) {
+                throw IllegalStateException("SQLite database has no valid WiGLE 'network' table")
+            }
         }
     }
 

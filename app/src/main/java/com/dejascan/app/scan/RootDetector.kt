@@ -2,9 +2,21 @@ package com.dejascan.app.scan
 
 import android.os.Build
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 object RootDetector {
-    val isRooted: Boolean by lazy { checkRoot() }
+    @Volatile
+    private var cachedRooted: Boolean? = null
+
+    /** Last known root state without performing any disk I/O or spawning a process (safe on main thread). */
+    fun peekCached(): Boolean = cachedRooted ?: false
+
+    /** Re-evaluates root status (performs file/process checks; call off the main thread) and caches the result. */
+    fun refresh(): Boolean = checkRoot().also { cachedRooted = it }
+
+    /** Cached root check; evaluates on first call if not yet refreshed. Call from a background thread. */
+    val isRooted: Boolean
+        get() = cachedRooted ?: refresh()
 
     val KNOWN_ROOT_PATHS = listOf(
         "/system/app/Superuser.apk",
@@ -39,7 +51,7 @@ object RootDetector {
             try {
                 val process = Runtime.getRuntime().exec(arrayOf("which", cmd))
                 val line = process.inputStream.bufferedReader().use { it.readLine() }
-                process.destroy()
+                if (!process.waitFor(2, TimeUnit.SECONDS)) process.destroyForcibly()
                 !line.isNullOrBlank()
             } catch (_: Throwable) {
                 false

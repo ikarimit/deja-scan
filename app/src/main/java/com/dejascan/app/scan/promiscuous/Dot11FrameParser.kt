@@ -1,34 +1,35 @@
 package com.dejascan.app.scan.promiscuous
 
+import com.dejascan.app.scan.MacUtil
 import java.io.EOFException
 import java.io.InputStream
 
-enum class MgmtSubtype(val code: Int, val label: String) {
-    ASSOC_REQ(0, "Assoc Req"),
-    REASSOC_REQ(2, "Reassoc Req"),
-    PROBE_REQ(4, "Probe Req"),
-    PROBE_RESP(5, "Probe Resp"),
-    BEACON(8, "Beacon"),
-    DISASSOC(10, "Disassoc"),
-    AUTH(11, "Auth"),
-    DEAUTH(12, "Deauth"),
-    ACTION(13, "Action"),
-    OTHER(-1, "Mgmt");
+enum class MgmtSubtype(val code: Int) {
+    ASSOC_REQ(0),
+    REASSOC_REQ(2),
+    PROBE_REQ(4),
+    PROBE_RESP(5),
+    BEACON(8),
+    DISASSOC(10),
+    AUTH(11),
+    DEAUTH(12),
+    ACTION(13),
+    OTHER(-1);
 
     companion object {
         fun fromCode(code: Int): MgmtSubtype = entries.firstOrNull { it.code == code } ?: OTHER
     }
 }
 
-enum class CtrlSubtype(val code: Int, val label: String) {
-    BLOCK_ACK_REQ(8, "BlockAckReq"),
-    BLOCK_ACK(9, "BlockAck"),
-    PS_POLL(10, "PS-Poll"),
-    RTS(11, "RTS"),
-    CTS(12, "CTS"),
-    ACK(13, "ACK"),
-    CF_END(14, "CF-End"),
-    OTHER(-1, "Ctrl");
+enum class CtrlSubtype(val code: Int) {
+    BLOCK_ACK_REQ(8),
+    BLOCK_ACK(9),
+    PS_POLL(10),
+    RTS(11),
+    CTS(12),
+    ACK(13),
+    CF_END(14),
+    OTHER(-1);
 
     companion object {
         fun fromCode(code: Int): CtrlSubtype = entries.firstOrNull { it.code == code } ?: OTHER
@@ -380,10 +381,7 @@ object Dot11FrameParser {
 
     private fun decodeCleanSsid(buf: ByteArray, off: Int, len: Int): String? {
         val raw = String(buf, off, len, Charsets.UTF_8)
-        val cleaned = buildString(raw.length) {
-            for (ch in raw) if (ch.code >= 0x20 && ch != '\uFFFD') append(ch)
-        }.trim()
-        return cleaned.ifEmpty { null }
+        return MacUtil.cleanAirText(raw, maxLen = 32).ifEmpty { null }
     }
 
     private fun align(offset: Int, alignment: Int): Int = (offset + alignment - 1) and (alignment - 1).inv()

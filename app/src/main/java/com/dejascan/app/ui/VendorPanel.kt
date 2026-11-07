@@ -171,12 +171,12 @@ fun VendorsPanel(
     val wifiTotal = remember(sightings) { sightings.count { it.type == "W" } }
     val btTotal = remember(sightings, wifiTotal) { totalCount - wifiTotal }
 
-    val allGroups = remember(sightings, ready) { groupSightingsByVendor(sightings, "ALL") }
+    val allGroups = remember(sightings) { groupSightingsByVendor(sightings, "ALL") }
     val uniqueVendors = remember(allGroups) { allGroups.count { !it.isRandomized && !it.isUnknown } }
     val randomizedTotal = remember(allGroups) { allGroups.firstOrNull { it.isRandomized }?.totalCount ?: 0 }
     val unknownTotal = remember(allGroups) { allGroups.firstOrNull { it.isUnknown }?.totalCount ?: 0 }
 
-    val groups = remember(sightings, typeFilter, query, ready) {
+    val groups = remember(sightings, typeFilter, query) {
         groupSightingsByVendor(sightings, typeFilter, query)
     }
 

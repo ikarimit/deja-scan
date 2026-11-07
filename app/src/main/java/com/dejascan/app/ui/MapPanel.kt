@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -90,7 +89,7 @@ private const val LINKS_FROM_ZOOM = 12
 
 /**
  * Draws one dot per device color-coded by [DetectionCategory]:
- * - Attacker (Crimson), Outdated WEP (Orange), Rare (Gold), Uncommon (Cyan), Randomized MAC (Purple), Normal (Green).
+ * - Possible audit tool (Crimson), Outdated WEP (Orange), Rare (Gold), Uncommon (Cyan), Randomized MAC (Purple), Normal (Green).
  * - Live estimated positions are larger filled dots; live approximate positions are hollow dots fanned out around the phone;
  *   WiGLE stored positions are compact filled dots (or numbered cluster bubbles when zoomed out).
  * - Selecting a dot highlights it with a target ring and an on-map HUD tag displaying its name, category, and channel + width.
@@ -261,7 +260,7 @@ private class PointsLayer(private val dp: Float) : Layer() {
                 bubble(canvas, sx(x), sy(y), d.count, 0xFF37474F.toInt(), false)
                 out.add(Hit(x, y, null, d.lat, d.lon))
             } else {
-                val isAlert = d.category == DetectionCategory.ATTACKER || d.category == DetectionCategory.WEP
+                val isAlert = d.category == DetectionCategory.AUDIT_TOOL || d.category == DetectionCategory.WEP
                 dot(canvas, sx(x), sy(y), 5f, d.category.mapColorArgb, false, alertHalo = isAlert)
                 out.add(Hit(x, y, d.mac, d.lat, d.lon))
             }
@@ -290,7 +289,7 @@ private class PointsLayer(private val dp: Float) : Layer() {
                 val x = c.sx / c.n; val y = c.sy / c.n
                 if (c.n == 1) {
                     val d = c.first!!
-                    val isAlert = d.category == DetectionCategory.ATTACKER || d.category == DetectionCategory.WEP
+                    val isAlert = d.category == DetectionCategory.AUDIT_TOOL || d.category == DetectionCategory.WEP
                     dot(canvas, sx(x), sy(y), 7.5f, d.category.mapColorArgb, false, alertHalo = isAlert)
                     out.add(Hit(x, y, d.mac, d.lat, d.lon))
                 } else {
@@ -303,7 +302,7 @@ private class PointsLayer(private val dp: Float) : Layer() {
         for (d in exact) {
             if (zoom >= CLUSTER_BELOW_ZOOM || d.mac == sel) {
                 val x = wx(d.lon); val y = wy(d.lat)
-                val isAlert = d.category == DetectionCategory.ATTACKER || d.category == DetectionCategory.WEP
+                val isAlert = d.category == DetectionCategory.AUDIT_TOOL || d.category == DetectionCategory.WEP
                 dot(canvas, sx(x), sy(y), 7.5f, d.category.mapColorArgb, false, alertHalo = isAlert)
                 out.add(Hit(x, y, d.mac, d.lat, d.lon))
                 if (d.mac == sel) { selX = x; selY = y; selDot = d }
@@ -316,7 +315,7 @@ private class PointsLayer(private val dp: Float) : Layer() {
                 val x = wx(g[0].lon); val y = wy(g[0].lat)
                 if (g.size == 1) {
                     val d = g[0]
-                    val isAlert = d.category == DetectionCategory.ATTACKER || d.category == DetectionCategory.WEP
+                    val isAlert = d.category == DetectionCategory.AUDIT_TOOL || d.category == DetectionCategory.WEP
                     dot(canvas, sx(x), sy(y), 6.5f, d.category.mapColorArgb, true, alertHalo = isAlert)
                     out.add(Hit(x, y, d.mac, d.lat, d.lon))
                 } else {
@@ -334,7 +333,7 @@ private class PointsLayer(private val dp: Float) : Layer() {
                     val a = i * 2.399963
                     x += r * kotlin.math.cos(a); y += r * kotlin.math.sin(a)
                 }
-                val isAlert = d.category == DetectionCategory.ATTACKER || d.category == DetectionCategory.WEP
+                val isAlert = d.category == DetectionCategory.AUDIT_TOOL || d.category == DetectionCategory.WEP
                 dot(canvas, sx(x), sy(y), 6.5f, d.category.mapColorArgb, true, alertHalo = isAlert)
                 out.add(Hit(x, y, d.mac, d.lat, d.lon))
                 if (d.mac == sel) { selX = x; selY = y; selDot = d }
@@ -416,7 +415,6 @@ private fun MapChip(modifier: Modifier = Modifier, content: @Composable () -> Un
     ) { content() }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MapTab(
     vm: AppViewModel,
@@ -728,7 +726,6 @@ private suspend fun fitAll(vm: AppViewModel, mapView: MapView, phone: PhoneFix?,
     fitPoints(mapView, ll)
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun LegendPanel(vm: AppViewModel, others: Boolean, onHide: () -> Unit, modifier: Modifier) {
     val shape = RoundedCornerShape(12.dp)

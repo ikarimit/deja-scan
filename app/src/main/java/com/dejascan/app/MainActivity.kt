@@ -27,6 +27,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.dejascan.app.scan.MacUtil
 import com.dejascan.app.scan.ScanService
 import com.dejascan.app.scan.SightingBus
 import com.dejascan.app.ui.AppViewModel
@@ -61,8 +62,8 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val mac = intent.getStringExtra(EXTRA_SELECT_MAC)
-        if (!mac.isNullOrEmpty()) {
+        val mac = MacUtil.normalize(intent.getStringExtra(EXTRA_SELECT_MAC))
+        if (mac != null) {
             onSelectMac?.invoke(mac)
         }
     }
@@ -70,14 +71,14 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
-        val initialMac = intent?.getStringExtra(EXTRA_SELECT_MAC)
+        val initialMac = MacUtil.normalize(intent?.getStringExtra(EXTRA_SELECT_MAC))
         setContent {
             val vm: AppViewModel = viewModel()
             val dark = vm.themeMode.isDark()
 
             DisposableEffect(vm) {
                 onSelectMac = { vm.select(it) }
-                if (!initialMac.isNullOrEmpty()) {
+                if (initialMac != null) {
                     vm.select(initialMac)
                 }
                 onDispose { onSelectMac = null }
@@ -161,6 +162,12 @@ class MainActivity : ComponentActivity() {
                 val pickLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.OpenDocument(),
                 ) { uri -> if (uri != null) vm.linkFile(uri) }
+                val saveMergedLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.CreateDocument("application/octet-stream"),
+                ) { uri -> if (uri != null) vm.exportMergedToUri(uri) }
+                val saveBackupLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.CreateDocument("application/octet-stream"),
+                ) { uri -> if (uri != null) vm.exportBackupToUri(uri) }
 
                 DejaApp(
                     vm = vm,
@@ -189,6 +196,8 @@ class MainActivity : ComponentActivity() {
                     },
                     onPickFile = { pickLauncher.launch(arrayOf("*/*")) },
                     onPickMap = { mapLauncher.launch(arrayOf("*/*")) },
+                    onExportMerged = { saveMergedLauncher.launch(vm.suggestedMergedFileName()) },
+                    onExportBackup = { saveBackupLauncher.launch("wigle-pre-merge-backup.sqlite") },
                 )
             }
         }

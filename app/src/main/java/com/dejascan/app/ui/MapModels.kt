@@ -19,7 +19,7 @@ data class MapDot(
     val watched: Boolean = true,
     /** More than 1 for a bubble that stands for several WiGLE devices. */
     val count: Int = 1,
-    /** Visual classification (Attacker, WEP, Rare, Uncommon, Randomized, Normal). */
+    /** Visual classification (Possible audit tool, WEP, Rare, Uncommon, Randomized, Normal). */
     val category: DetectionCategory = DetectionCategory.NORMAL,
     /** Compact Wi-Fi channel and bandwidth label (e.g. "Ch 36 • 80MHz"). */
     val channelInfo: String = "",

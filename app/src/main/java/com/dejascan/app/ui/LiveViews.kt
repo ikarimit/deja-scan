@@ -93,7 +93,7 @@ enum class ActivitySubView(val label: String) {
 enum class SignalFilter(val label: String) {
     ALL("ALL"),
     WATCHED("WATCHED"),
-    ALERTS("THREAT/WEP"),
+    ALERTS("AUDIT/WEP"),
     RARE("RARE"),
     RAND("RAND"),
 }
@@ -117,7 +117,7 @@ private fun blipPos(mac: String, rssi: Int, c: Offset, radius: Float): Offset {
 
 /**
  * Radar: stronger signal = nearer the centre. Blips are color-coded by detection category
- * (Attacker, Outdated WEP, Rare, Uncommon, Randomized MAC, Normal). Tap a blip to inspect.
+ * (Possible audit tool, Outdated WEP, Rare, Uncommon, Randomized MAC, Normal). Tap a blip to inspect.
  */
 @Composable
 fun RadarPanel(
@@ -191,7 +191,7 @@ fun RadarPanel(
             }
             drawRect(Phosphor.green, Offset(c.x - 2.dp.toPx(), c.y - 2.dp.toPx()), Size(4.dp.toPx(), 4.dp.toPx()))
 
-            // Draw normal blips first, higher-priority threats/rare blips on top
+            // Draw normal blips first, higher-priority audit/WEP/rare blips on top
             val ordered = tracks.sortedByDescending { classifications[it.mac]?.category?.priority ?: 5 }
             for (s in ordered) {
                 val p = blipPos(s.mac, s.rssi, c, radius)
@@ -202,13 +202,13 @@ fun RadarPanel(
                 val half = if (cat.priority <= 2) 5.dp.toPx() else 4.dp.toPx()
 
                 if (running) {
-                    val g = (if (cat == DetectionCategory.ATTACKER) 12.dp else 8.dp).toPx() * pulse.value
+                    val g = (if (cat == DetectionCategory.AUDIT_TOOL) 12.dp else 8.dp).toPx() * pulse.value
                     drawCircle(col.copy(alpha = 0.2f * alpha), radius = g, center = p)
                 }
                 drawRect(col.copy(alpha = alpha), Offset(p.x - half, p.y - half), Size(2 * half, 2 * half))
 
                 when (cat) {
-                    DetectionCategory.ATTACKER -> {
+                    DetectionCategory.AUDIT_TOOL -> {
                         val r1 = 10.dp.toPx() * (0.85f + 0.35f * pulse.value)
                         drawCircle(col.copy(alpha = 0.9f * alpha), radius = r1, center = p, style = Stroke(width = 1.8.dp.toPx()))
                     }
@@ -281,7 +281,7 @@ fun SignalsPanel(
             when (filter) {
                 SignalFilter.ALL -> true
                 SignalFilter.WATCHED -> s.watched
-                SignalFilter.ALERTS -> cat == DetectionCategory.ATTACKER || cat == DetectionCategory.WEP || s.isOpen
+                SignalFilter.ALERTS -> cat == DetectionCategory.AUDIT_TOOL || cat == DetectionCategory.WEP || s.isOpen
                 SignalFilter.RARE -> cat == DetectionCategory.RARE || cat == DetectionCategory.UNCOMMON
                 SignalFilter.RAND -> cat == DetectionCategory.RANDOMIZED
             }

@@ -7,7 +7,6 @@ import com.dejascan.app.scan.SightingBus
 import com.dejascan.app.scan.WifiBand
 import com.dejascan.app.scan.WifiStandardHelper
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -43,33 +42,27 @@ class WifiSpectrumTest {
     }
 
     @Test
-    fun testWifiStandardHelperLabelsAndBadges() {
+    fun testWifiStandardHelperLabels() {
         // Wi-Fi 7 (802.11be)
         assertEquals("Wi-Fi 7 (802.11be)", WifiStandardHelper.getStandardName(WifiStandardHelper.STANDARD_11BE, 5180))
         assertEquals("Wi-Fi 7 (802.11be)", WifiStandardHelper.getStandardName(WifiStandardHelper.STANDARD_11BE, 6135))
-        assertEquals("Wi-Fi 7", WifiStandardHelper.getStandardBadge(WifiStandardHelper.STANDARD_11BE, 6135))
 
         // Wi-Fi 6 on 2.4/5 GHz
         assertEquals("Wi-Fi 6 (802.11ax)", WifiStandardHelper.getStandardName(WifiStandardHelper.STANDARD_11AX, 2412))
         assertEquals("Wi-Fi 6 (802.11ax)", WifiStandardHelper.getStandardName(WifiStandardHelper.STANDARD_11AX, 5180))
-        assertEquals("Wi-Fi 6", WifiStandardHelper.getStandardBadge(WifiStandardHelper.STANDARD_11AX, 5180))
 
         // Wi-Fi 6E on 6 GHz (5925+ MHz)
         assertEquals("Wi-Fi 6E (802.11ax 6 GHz)", WifiStandardHelper.getStandardName(WifiStandardHelper.STANDARD_11AX, 5955))
         assertEquals("Wi-Fi 6E (802.11ax 6 GHz)", WifiStandardHelper.getStandardName(WifiStandardHelper.STANDARD_11AX, 6515))
-        assertEquals("Wi-Fi 6E", WifiStandardHelper.getStandardBadge(WifiStandardHelper.STANDARD_11AX, 5955))
 
         // Wi-Fi 5 (802.11ac)
         assertEquals("Wi-Fi 5 (802.11ac)", WifiStandardHelper.getStandardName(WifiStandardHelper.STANDARD_11AC, 5180))
-        assertEquals("Wi-Fi 5", WifiStandardHelper.getStandardBadge(WifiStandardHelper.STANDARD_11AC, 5180))
 
         // Wi-Fi 4 (802.11n)
         assertEquals("Wi-Fi 4 (802.11n)", WifiStandardHelper.getStandardName(WifiStandardHelper.STANDARD_11N, 2412))
-        assertEquals("Wi-Fi 4", WifiStandardHelper.getStandardBadge(WifiStandardHelper.STANDARD_11N, 2412))
 
         // Legacy (802.11a/b/g)
         assertEquals("Legacy (802.11a/b/g)", WifiStandardHelper.getStandardName(WifiStandardHelper.STANDARD_LEGACY, 2412))
-        assertEquals("Legacy", WifiStandardHelper.getStandardBadge(WifiStandardHelper.STANDARD_LEGACY, 2412))
     }
 
     @Test
@@ -136,13 +129,13 @@ class WifiSpectrumTest {
 
     @Test
     fun testChannelWithBandFormatting() {
-        assertEquals("Ch 1 (2.4 GHz)", ChannelWidthHelper.channelWithBand(2412))
-        assertEquals("Ch 6 (2.4 GHz)", ChannelWidthHelper.channelWithBand(2437))
-        assertEquals("Ch 14 (2.4 GHz)", ChannelWidthHelper.channelWithBand(2484))
-        assertEquals("Ch 36 (5 GHz)", ChannelWidthHelper.channelWithBand(5180))
-        assertEquals("Ch 149 (5 GHz)", ChannelWidthHelper.channelWithBand(5745))
-        assertEquals("Ch 1 (6 GHz)", ChannelWidthHelper.channelWithBand(5955))
-        assertEquals("Ch 37 (6 GHz)", ChannelWidthHelper.channelWithBand(6135))
+        assertEquals("Ch 1 (2.4 GHz)", ChannelWidthHelper.formatChannelWidth(2412, -1, compact = false))
+        assertEquals("Ch 6 (2.4 GHz)", ChannelWidthHelper.formatChannelWidth(2437, -1, compact = false))
+        assertEquals("Ch 14 (2.4 GHz)", ChannelWidthHelper.formatChannelWidth(2484, -1, compact = false))
+        assertEquals("Ch 36 (5 GHz)", ChannelWidthHelper.formatChannelWidth(5180, -1, compact = false))
+        assertEquals("Ch 149 (5 GHz)", ChannelWidthHelper.formatChannelWidth(5745, -1, compact = false))
+        assertEquals("Ch 1 (6 GHz)", ChannelWidthHelper.formatChannelWidth(5955, -1, compact = false))
+        assertEquals("Ch 37 (6 GHz)", ChannelWidthHelper.formatChannelWidth(6135, -1, compact = false))
 
         // Compact channel + width formatting used across Map, Signals, Vendors, and Devices tabs
         assertEquals("Ch 6 • 20MHz", ChannelWidthHelper.formatChannelWidth(2437, ChannelWidthHelper.WIDTH_20MHZ, compact = true))
@@ -157,7 +150,7 @@ class WifiSpectrumTest {
     }
 
     @Test
-    fun testSightingModelConvenienceExtensions() {
+    fun testSightingModelChannelExtensions() {
         val s = Sighting(
             mac = "11:22:33:44:55:66",
             name = "Test-WiFi-7-AP",
@@ -180,12 +173,9 @@ class WifiSpectrumTest {
             standardLabel = "Wi-Fi 7 (802.11be)",
         )
 
-        assertEquals(WifiBand.BAND_6_GHZ, s.wifiBand)
-        assertEquals(320, s.bandwidthMhz)
-        assertEquals("320 MHz", s.bandwidthLabel)
-        assertEquals(6105, s.centerFreq)
         assertEquals(5945..6265, s.frequencySpan)
-        assertEquals("Wi-Fi 7", s.standardBadge)
+        assertEquals("Ch 1 (6G) • 320MHz", s.channelSummary)
+        assertEquals("Ch 1 (6 GHz) • 320 MHz", s.channelDetail)
     }
 
     @Test
@@ -217,10 +207,7 @@ class WifiSpectrumTest {
         val reported = SightingBus.sightings.value[dev.mac]
         assertTrue(reported != null)
         assertEquals(6135, reported!!.freq)
-        assertEquals(WifiBand.BAND_6_GHZ, reported.wifiBand)
-        assertEquals(160, reported.bandwidthMhz)
-        assertEquals("160 MHz", reported.bandwidthLabel)
-        assertEquals("Wi-Fi 6E", reported.standardBadge)
+        assertEquals("Ch 37 (6G) • 160MHz", reported.channelSummary)
         assertEquals(WifiStandardHelper.STANDARD_11AX, reported.wifiStandard)
         assertEquals("Wi-Fi 6E (802.11ax 6 GHz)", reported.standardLabel)
     }

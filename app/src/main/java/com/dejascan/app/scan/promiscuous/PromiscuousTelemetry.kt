@@ -39,7 +39,6 @@ data class ApFrameStats(
     val dataFrames: Long = 0,
     val deauthFrames: Long = 0,
     val lastReasonCode: Int = 0,
-    val lastDeauthTime: Long = 0L,
     val isHiddenBeacon: Boolean = false,
 )
 
@@ -49,7 +48,6 @@ data class UnmaskedNetwork(
     val source: String,
     val rssi: Int,
     val freqMhz: Int,
-    val firstUnmaskedAt: Long,
     val lastSeenAt: Long,
 )
 
@@ -58,7 +56,6 @@ data class ClientStation(
     val associatedBssid: String?,
     val rssi: Int,
     val freqMhz: Int,
-    val firstSeen: Long,
     val lastSeen: Long,
     val frameCount: Int,
     val controlFrames: Int,
@@ -271,7 +268,6 @@ class PromiscuousTracker(
                     apStats[bssid] = prev.copy(
                         deauthFrames = prev.deauthFrames + 1,
                         lastReasonCode = f.reasonCode,
-                        lastDeauthTime = now,
                     )
                 }
                 null
@@ -310,7 +306,6 @@ class PromiscuousTracker(
                 source = method,
                 rssi = rssi,
                 freqMhz = freqMhz,
-                firstUnmaskedAt = now,
                 lastSeenAt = now,
             )
             return true
@@ -351,7 +346,6 @@ class PromiscuousTracker(
             associatedBssid = assoc,
             rssi = effectiveRssi,
             freqMhz = if (freqMhz > 0) freqMhz else (prev?.freqMhz ?: 0),
-            firstSeen = prev?.firstSeen ?: now,
             lastSeen = now,
             frameCount = (prev?.frameCount ?: 0) + 1,
             controlFrames = (prev?.controlFrames ?: 0) + (if (isControl) 1 else 0),

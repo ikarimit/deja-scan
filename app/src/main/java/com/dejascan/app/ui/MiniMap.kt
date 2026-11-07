@@ -123,7 +123,7 @@ fun MiniMap(
         val dim = mapView.dimension
         val near = phone != null && Geo.haversineM(phone.lat, phone.lon, t.latitude, t.longitude) < 3000
         val pos = if (near && dim.width > 0 && dim.height > 0) {
-            val bb = BoundingBox(listOf(t, LatLong(phone!!.lat, phone.lon)))
+            val bb = BoundingBox(listOf(t, LatLong(phone.lat, phone.lon)))
             val z = (LatLongUtils.zoomForBounds(dim, bb, mapView.model.displayModel.tileSize) - 1).coerceIn(3, 17)
             MapPosition(bb.centerPoint, z.toByte())
         } else MapPosition(t, 16)

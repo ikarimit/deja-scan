@@ -41,16 +41,6 @@ object WifiStandardHelper {
         else -> if (freqMhz in 5925..7125) "Wi-Fi 6E / 7" else "Unknown standard"
     }
 
-    fun getStandardBadge(standard: Int, freqMhz: Int): String = when (standard) {
-        STANDARD_11BE -> "Wi-Fi 7"
-        STANDARD_11AX -> if (freqMhz >= 5925) "Wi-Fi 6E" else "Wi-Fi 6"
-        STANDARD_11AC -> "Wi-Fi 5"
-        STANDARD_11N -> "Wi-Fi 4"
-        STANDARD_11AD -> "WiGig"
-        STANDARD_LEGACY -> "Legacy"
-        else -> if (freqMhz in 5925..7125) "6E/7" else ""
-    }
-
     fun resolveStandard(standard: Int, freqMhz: Int, channelWidth: Int): Int = when {
         standard != STANDARD_UNKNOWN -> standard
         channelWidth == ChannelWidthHelper.WIDTH_320MHZ -> STANDARD_11BE
@@ -98,16 +88,6 @@ object ChannelWidthHelper {
         val half = getWidthMhz(channelWidth) / 2
         val center = getCenterFreq(freqMhz, centerFreq0)
         return (center - half)..(center + half)
-    }
-
-    fun channelWithBand(freqMhz: Int): String {
-        val ch = channelFor(freqMhz)
-        val band = WifiBand.forFrequency(freqMhz)
-        return when {
-            band != WifiBand.UNKNOWN -> "Ch $ch (${band.label})"
-            ch > 0 -> "Ch $ch"
-            else -> "$freqMhz MHz"
-        }
     }
 
     /**

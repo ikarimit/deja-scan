@@ -8,7 +8,7 @@ import org.junit.Test
 class DensityTrackerTest {
 
     @Test
-    fun recordWifiApIncrementsApAndNetworkCount() {
+    fun recordWifiApIncrementsApCount() {
         val tracker = DensityTracker()
         val t = 60_000L * 100 // 100th minute
 
@@ -20,8 +20,6 @@ class DensityTrackerTest {
         val p = points[0]
         assertEquals(2, p.apCount)
         assertEquals(1, p.newApCount) // only 11:22:33:44:55:66 is new
-        assertEquals(2, p.networkCount)
-        assertEquals(1, p.newNetworkCount)
     }
 
     @Test
@@ -41,7 +39,7 @@ class DensityTrackerTest {
     }
 
     @Test
-    fun bluetoothDevicesCountAsNetworksNotAps() {
+    fun bluetoothDevicesAreIgnoredForApDensity() {
         val tracker = DensityTracker()
         val t = 60_000L * 10
 
@@ -52,8 +50,6 @@ class DensityTrackerTest {
         assertEquals(1, points.size)
         assertEquals(0, points[0].apCount)
         assertEquals(0, points[0].newApCount)
-        assertEquals(2, points[0].networkCount)
-        assertEquals(2, points[0].newNetworkCount)
     }
 
     @Test
@@ -97,29 +93,12 @@ class DensityTrackerTest {
     }
 
     @Test
-    fun peakApDensityFindsMaximumAcrossWindow() {
-        val tracker = DensityTracker()
-        val t = 60_000L * 50
-
-        // Minute 48: 3 APs
-        tracker.record("ap1", "W", true, 60_000L * 48)
-        tracker.record("ap2", "W", true, 60_000L * 48)
-        tracker.record("ap3", "W", true, 60_000L * 48)
-
-        // Minute 49: 1 AP
-        tracker.record("ap1", "W", true, 60_000L * 49)
-
-        val peak = tracker.peakApDensity(windowMinutes = 10, now = t)
-        assertEquals(3, peak)
-    }
-
-    @Test
     fun clearResetsAllBuckets() {
         val tracker = DensityTracker()
         val t = 60_000L * 10
         tracker.record("ap1", "W", false, t)
         tracker.clear()
         val points = tracker.rollingPoints(now = t, windowMinutes = 5)
-        assertTrue(points.all { it.apCount == 0 && it.networkCount == 0 })
+        assertTrue(points.all { it.apCount == 0 })
     }
 }
